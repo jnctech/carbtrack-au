@@ -1,0 +1,26 @@
+services:
+  carbtrack-api:
+    build: .
+    container_name: carbtrack-api
+    restart: unless-stopped
+    ports:
+      - "${DEPLOY_HOST:-0.0.0.0}:8765:8765"
+    env_file:
+      - .env
+    volumes:
+      - carbtrack-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - servers
+
+volumes:
+  carbtrack-data:
+
+networks:
+  servers:
+    external: true

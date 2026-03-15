@@ -6,7 +6,6 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.ai_helpers import (
@@ -16,7 +15,8 @@ from app.ai_helpers import (
     parse_ai_json,
 )
 from app.database import get_session
-from app.models import Food, FoodSourceRef, Source, Staging, _utcnow
+from app.models import Source, Staging, _utcnow
+from app.services.approve import check_conflicts, promote_to_foods
 
 router = APIRouter(prefix="/staging", tags=["staging"])
 
@@ -142,75 +142,20 @@ def approve_staging(
             detail="mapped_data missing required field: name",
         )
 
-    for ref in _find_existing_refs(mapped, session):
-        if ref.reported_carbs == 0:
-            # Zero-carb ref indicates data quality issue — hold for review
-            staging.status = "conflict"
-            staging.conflict_notes = (
-                f"Existing food_source_ref (id={ref.id}, source={ref.source_id}) "
-                f"has reported_carbs=0. Manual review required before "
-                f"promoting new value {mapped_carbs}g."
-            )
-            staging.reviewed_at = _utcnow()
-            session.add(staging)
-            session.commit()
-            session.refresh(staging)
-            return staging
-        variance = abs(ref.reported_carbs - mapped_carbs) / ref.reported_carbs
-        if variance > 0.05:
-            staging.status = "conflict"
-            staging.conflict_notes = (
-                f"Carb variance {variance:.1%} exceeds 5% threshold. "
-                f"Existing: {ref.reported_carbs}g (source {ref.source_id}), "
-                f"New: {mapped_carbs}g (source {staging.source_id})."
-            )
-            staging.reviewed_at = _utcnow()
-            session.add(staging)
-            session.commit()
-            session.refresh(staging)
-            return staging
+    conflict = check_conflicts(mapped, staging, session)
+    if conflict:
+        session.commit()
+        session.refresh(staging)
+        return staging
 
-    food = Food(
-        barcode=mapped.get("barcode"),
-        name=mapped["name"],
-        brand=mapped.get("brand"),
-        category=mapped.get("category"),
-        source_id=staging.source_id,
-        source_confidence=mapped.get("source_confidence", 1.0),
-        carbs_per_100g=mapped_carbs,
-        sugars_per_100g=mapped.get("sugars_per_100g"),
-        fibre_per_100g=mapped.get("fibre_per_100g"),
-        energy_kj=mapped.get("energy_kj"),
-        protein_per_100g=mapped.get("protein_per_100g"),
-        fat_per_100g=mapped.get("fat_per_100g"),
-        sodium_mg=mapped.get("sodium_mg"),
-        gi_rating=mapped.get("gi_rating"),
-        serving_size_g=mapped.get("serving_size_g"),
-    )
-    session.add(food)
-    try:
-        session.flush()  # populate food.id before inserting ref
-    except IntegrityError:
-        session.rollback()
+    result = promote_to_foods(mapped, staging, session)
+    if result == "skipped_duplicate":
         raise HTTPException(
             status_code=409,
             detail=f"Food could not be created — a record with barcode "
             f"{mapped.get('barcode')!r} may already exist",
         )
 
-    session.add(
-        FoodSourceRef(
-            food_id=food.id,
-            source_id=staging.source_id,
-            reported_carbs=mapped_carbs,
-            queried_at=_utcnow(),
-            raw_response_json=staging.raw_data,
-        )
-    )
-
-    staging.status = "approved"
-    staging.reviewed_at = _utcnow()
-    session.add(staging)
     session.commit()
     session.refresh(staging)
     return staging
@@ -301,38 +246,3 @@ def map_staging(
     return staging
 
 
-def _find_existing_refs(mapped: dict, session: Session) -> list[FoodSourceRef]:
-    """Find existing food_source_refs matching by barcode or name+brand."""
-    refs: list[FoodSourceRef] = []
-
-    barcode = mapped.get("barcode")
-    name = mapped.get("name")
-    brand = mapped.get("brand")
-
-    barcode_matched = False
-    if barcode:
-        food = session.exec(
-            select(Food).where(Food.barcode == barcode, Food.active == True)  # noqa: E712
-        ).first()
-        if food:
-            barcode_matched = True
-            refs.extend(
-                session.exec(
-                    select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
-                ).all()
-            )
-
-    if not barcode_matched and name:
-        statement = select(Food).where(
-            Food.name == name, Food.active == True  # noqa: E712
-        )
-        if brand:
-            statement = statement.where(Food.brand == brand)
-        for food in session.exec(statement).all():
-            refs.extend(
-                session.exec(
-                    select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
-                ).all()
-            )
-
-    return refs

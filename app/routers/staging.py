@@ -1,4 +1,4 @@
-"""Staging router — submit, list, approve (with conflict detection), reject."""
+"""Staging router — submit, list, approve (with conflict detection), reject, map."""
 
 import json
 from datetime import datetime
@@ -9,8 +9,15 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.ai_helpers import (
+    MAP_FIELDS_SYSTEM_PROMPT,
+    SCHEMA_FIELDS,
+    get_anthropic_client,
+    get_sonnet_model,
+    parse_ai_json,
+)
 from app.database import get_session
-from app.models import Food, FoodSourceRef, Staging, _utcnow
+from app.models import Food, FoodSourceRef, Source, Staging, _utcnow
 
 router = APIRouter(prefix="/staging", tags=["staging"])
 
@@ -225,6 +232,64 @@ def reject_staging(
     staging.reviewed_at = _utcnow()
     if body and body.note:
         staging.conflict_notes = body.note
+    session.add(staging)
+    session.commit()
+    session.refresh(staging)
+    return staging
+
+
+@router.post("/{staging_id}/map", response_model=StagingResponse)
+def map_staging(
+    staging_id: int,
+    session: Session = Depends(get_session),
+):
+    """Sonnet maps raw_data → mapped_data. Does NOT promote or trigger conflict detection.
+
+    Map and approve are strictly separate actions.
+    """
+    staging = session.get(Staging, staging_id)
+    if not staging:
+        raise HTTPException(status_code=404, detail="Staging entry not found")
+
+    if staging.status not in ("pending", "conflict"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot map entry with status '{staging.status}'",
+        )
+
+    try:
+        raw_parsed = json.loads(staging.raw_data)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"raw_data is not valid JSON: {exc}",
+        ) from exc
+
+    source = session.get(Source, staging.source_id)
+    source_name = source.name if source else f"Source {staging.source_id}"
+
+    user_prompt = (
+        f"Source: {source_name}\n"
+        f"Raw data:\n{json.dumps(raw_parsed, indent=2)}\n\n"
+        f"Map these fields to the CarbTrack schema: {SCHEMA_FIELDS}"
+    )
+
+    client = get_anthropic_client()
+    model = get_sonnet_model()
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=600,
+        system=MAP_FIELDS_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+
+    mapped = parse_ai_json(
+        response.content[0].text,
+        error_detail="Failed to parse AI field mapping response as JSON",
+    )
+
+    staging.mapped_data = json.dumps(mapped)
     session.add(staging)
     session.commit()
     session.refresh(staging)

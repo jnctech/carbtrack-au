@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.models import Source
+from app.models import Food, FoodSourceRef, Source, _utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ if DATABASE_URL.startswith("sqlite"):
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 SEED_FILE = Path(__file__).parent / "seed" / "sources.json"
+SEED_FOODS_FILE = Path(__file__).parent / "seed" / "seed_foods.json"
 
 
 def create_db_and_tables() -> None:
@@ -57,10 +58,60 @@ def seed_sources() -> None:
         logger.info("Seeded %d sources from %s", len(sources_data), SEED_FILE.name)
 
 
+def seed_foods() -> None:
+    """Seed foods table from seed_foods.json if table is empty.
+
+    Looks up AUSNUT 2011-13 source_id for branded/generic foods.
+    All seed foods have source_confidence >= 0.9 (Tier 1 sourced).
+    """
+    with Session(engine) as session:
+        existing = session.exec(select(Food).limit(1)).first()
+        if existing is not None:
+            logger.info("Foods table already seeded — skipping")
+            return
+
+        if not SEED_FOODS_FILE.exists():
+            logger.warning("Seed foods file not found: %s", SEED_FOODS_FILE)
+            return
+
+        # Look up AUSNUT source for source_id
+        ausnut = session.exec(
+            select(Source).where(Source.name == "AUSNUT 2011-13")
+        ).first()
+        if not ausnut:
+            logger.warning(
+                "AUSNUT 2011-13 source not found — cannot seed foods. "
+                "Ensure seed_sources() runs first."
+            )
+            return
+        default_source_id = ausnut.id
+
+        foods_data = json.loads(SEED_FOODS_FILE.read_text(encoding="utf-8"))
+        now = _utcnow()
+        for entry in foods_data:
+            food = Food(**entry, source_id=default_source_id)
+            session.add(food)
+            session.flush()  # populate food.id for FoodSourceRef
+
+            # Create audit trail — ensures conflict detection works for future imports
+            if default_source_id is not None:
+                session.add(
+                    FoodSourceRef(
+                        food_id=food.id,
+                        source_id=default_source_id,
+                        reported_carbs=entry["carbs_per_100g"],
+                        queried_at=now,
+                    )
+                )
+        session.commit()
+        logger.info("Seeded %d foods from %s", len(foods_data), SEED_FOODS_FILE.name)
+
+
 def init_db() -> None:
     """Create tables and seed on first run."""
     create_db_and_tables()
     seed_sources()
+    seed_foods()
 
 
 def get_session():

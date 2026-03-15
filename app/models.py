@@ -86,3 +86,9 @@ class Staging(SQLModel, table=True):
     conflict_notes: Optional[str] = None
     reviewed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"Staging(id={self.id}, source_id={self.source_id}, "
+            f"status={self.status})"
+        )

@@ -1,16 +1,19 @@
 """Shared helpers for Sonnet-assisted endpoints.
 
-Centralises Anthropic client creation, model resolution, JSON response
-parsing, and schema constants used across query-builder, sources, and
-staging routers.
+Centralises Anthropic client creation, model resolution, API call execution,
+JSON response parsing, and schema constants used across query-builder, sources,
+and staging routers.
 """
 
 import json
+import logging
 import os
 import re
 
 import anthropic
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_FIELDS = (
     "name, brand, barcode, category, carbs_per_100g, sugars_per_100g, "
@@ -59,6 +62,66 @@ def get_sonnet_model() -> str:
     return model
 
 
+def call_sonnet(
+    *,
+    system: str,
+    user_prompt: str,
+    max_tokens: int,
+) -> str:
+    """Call Sonnet and return the text response.
+
+    Handles Anthropic SDK exceptions, empty responses, and non-text blocks.
+    Raises appropriate HTTP errors for each failure mode.
+    """
+    client = get_anthropic_client()
+    model = get_sonnet_model()
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+    except anthropic.AuthenticationError:
+        logger.error("Anthropic API authentication failed — API key may be invalid or revoked")
+        raise HTTPException(
+            status_code=503,
+            detail="AI service authentication failed. Check ANTHROPIC_API_KEY configuration.",
+        )
+    except anthropic.RateLimitError:
+        logger.warning("Anthropic API rate limit hit")
+        raise HTTPException(
+            status_code=429,
+            detail="AI service rate limit reached. Please retry after a short delay.",
+        )
+    except anthropic.APIConnectionError as exc:
+        logger.error("Anthropic API connection failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach AI service. Please try again later.",
+        )
+    except anthropic.APIStatusError as exc:
+        logger.error("Anthropic API returned status %d: %s", exc.status_code, exc.message)
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI service error (status {exc.status_code}). Please try again later.",
+        )
+
+    if not response.content or not hasattr(response.content[0], "text"):
+        logger.error(
+            "Anthropic returned unexpected response structure: stop_reason=%s, content_length=%d",
+            response.stop_reason,
+            len(response.content) if response.content else 0,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="AI service returned an unexpected response format. Please retry.",
+        )
+
+    return response.content[0].text
+
+
 def parse_ai_json(response_text: str, error_detail: str = "Failed to parse AI response as JSON") -> dict:
     """Parse JSON from an AI response, handling markdown code block wrapping.
 
@@ -77,4 +140,5 @@ def parse_ai_json(response_text: str, error_detail: str = "Failed to parse AI re
         except json.JSONDecodeError:
             pass
 
+    logger.error("AI response not parseable as JSON. First 500 chars: %s", response_text[:500])
     raise HTTPException(status_code=502, detail=error_detail)

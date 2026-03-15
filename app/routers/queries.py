@@ -5,8 +5,7 @@ that the user executes externally. No httpx, requests, or urllib imports.
 """
 
 import json
-import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -15,14 +14,11 @@ from sqlmodel import Session, select
 from app.ai_helpers import (
     MAP_FIELDS_SYSTEM_PROMPT,
     SCHEMA_FIELDS,
-    get_anthropic_client,
-    get_sonnet_model,
+    call_sonnet,
     parse_ai_json,
 )
 from app.database import get_session
 from app.models import Source
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query-builder", tags=["query-builder"])
 
@@ -43,7 +39,7 @@ class ConstructRequest(BaseModel):
     source_id: int
     food_name: Optional[str] = None
     barcode: Optional[str] = None
-    query_type: str = "search"  # "search" or "barcode"
+    query_type: Literal["search", "barcode"] = "search"
 
 
 class ConstructResponse(BaseModel):
@@ -97,17 +93,13 @@ def construct_query(
         f"Generate a query template to find nutrition data for this food."
     )
 
-    client = get_anthropic_client()
-    model = get_sonnet_model()
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=400,
+    response_text = call_sonnet(
         system=CONSTRUCT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
+        user_prompt=user_prompt,
+        max_tokens=400,
     )
 
-    result = parse_ai_json(response.content[0].text)
+    result = parse_ai_json(response_text)
 
     return ConstructResponse(
         curl=result.get("curl", ""),
@@ -160,18 +152,14 @@ def map_fields(
         f"Map these fields to the CarbTrack schema: {SCHEMA_FIELDS}"
     )
 
-    client = get_anthropic_client()
-    model = get_sonnet_model()
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=600,
+    response_text = call_sonnet(
         system=MAP_FIELDS_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
+        user_prompt=user_prompt,
+        max_tokens=600,
     )
 
     mapped = parse_ai_json(
-        response.content[0].text,
+        response_text,
         error_detail="Failed to parse AI field mapping response as JSON",
     )
 

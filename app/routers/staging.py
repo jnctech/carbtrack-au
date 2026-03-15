@@ -12,8 +12,7 @@ from sqlmodel import Session, select
 from app.ai_helpers import (
     MAP_FIELDS_SYSTEM_PROMPT,
     SCHEMA_FIELDS,
-    get_anthropic_client,
-    get_sonnet_model,
+    call_sonnet,
     parse_ai_json,
 )
 from app.database import get_session
@@ -135,6 +134,12 @@ def approve_staging(
         raise HTTPException(
             status_code=400,
             detail=f"carbs_per_100g cannot be negative, got {mapped_carbs}",
+        )
+
+    if not mapped.get("name"):
+        raise HTTPException(
+            status_code=400,
+            detail="mapped_data missing required field: name",
         )
 
     for ref in _find_existing_refs(mapped, session):
@@ -266,26 +271,26 @@ def map_staging(
         ) from exc
 
     source = session.get(Source, staging.source_id)
-    source_name = source.name if source else f"Source {staging.source_id}"
+    if not source:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Staging entry references source_id={staging.source_id} which does not exist",
+        )
 
     user_prompt = (
-        f"Source: {source_name}\n"
+        f"Source: {source.name}\n"
         f"Raw data:\n{json.dumps(raw_parsed, indent=2)}\n\n"
         f"Map these fields to the CarbTrack schema: {SCHEMA_FIELDS}"
     )
 
-    client = get_anthropic_client()
-    model = get_sonnet_model()
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=600,
+    response_text = call_sonnet(
         system=MAP_FIELDS_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
+        user_prompt=user_prompt,
+        max_tokens=600,
     )
 
     mapped = parse_ai_json(
-        response.content[0].text,
+        response_text,
         error_detail="Failed to parse AI field mapping response as JSON",
     )
 

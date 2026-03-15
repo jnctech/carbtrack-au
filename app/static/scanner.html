@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CarbTrack AU — Barcode Scanner</title>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --border: #334155;
+    --text: #f1f5f9; --muted: #94a3b8; --accent: #38bdf8;
+    --green: #4ade80; --red: #f87171; --amber: #fbbf24;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100dvh; display: flex; flex-direction: column;
+    -webkit-tap-highlight-color: transparent;
+  }
+  header {
+    padding: 1rem; text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 1.25rem; font-weight: 600; }
+  header p { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+
+  main { flex: 1; padding: 1rem; max-width: 480px; margin: 0 auto; width: 100%; }
+
+  /* Scanner region */
+  #reader { width: 100%; border-radius: 0.5rem; overflow: hidden; }
+  #reader video { border-radius: 0.5rem; }
+
+  /* Manual entry */
+  .manual-entry {
+    display: flex; gap: 0.5rem; margin-top: 1rem;
+  }
+  .manual-entry input {
+    flex: 1; padding: 0.75rem; border-radius: 0.5rem;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 1rem;
+    -webkit-appearance: none;
+  }
+  .manual-entry input::placeholder { color: var(--muted); }
+  .manual-entry button {
+    padding: 0.75rem 1.25rem; border-radius: 0.5rem; border: none;
+    background: var(--accent); color: var(--bg); font-weight: 600;
+    font-size: 1rem; cursor: pointer; white-space: nowrap;
+  }
+
+  /* Serving size input */
+  .serving-row {
+    display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem;
+  }
+  .serving-row label { font-size: 0.9rem; color: var(--muted); white-space: nowrap; }
+  .serving-row input {
+    width: 5rem; padding: 0.5rem; border-radius: 0.5rem;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 1rem; text-align: center;
+    -webkit-appearance: none;
+  }
+  .serving-row span { font-size: 0.9rem; color: var(--muted); }
+
+  /* Result card */
+  .result-card {
+    margin-top: 1rem; padding: 1.25rem; border-radius: 0.75rem;
+    background: var(--surface); border: 1px solid var(--border);
+    display: none;
+  }
+  .result-card.visible { display: block; }
+  .result-card.error { border-color: var(--red); }
+  .food-name { font-size: 1.1rem; font-weight: 600; }
+  .food-brand { font-size: 0.85rem; color: var(--muted); margin-top: 0.15rem; }
+  .food-category { font-size: 0.8rem; color: var(--muted); }
+
+  .carb-hero {
+    margin-top: 1rem; display: flex; align-items: baseline; gap: 0.5rem;
+  }
+  .carb-hero .value { font-size: 2.5rem; font-weight: 700; color: var(--green); }
+  .carb-hero .unit { font-size: 1rem; color: var(--muted); }
+
+  .serving-carbs {
+    margin-top: 0.5rem; padding: 0.75rem; border-radius: 0.5rem;
+    background: var(--bg); display: none;
+  }
+  .serving-carbs.visible { display: flex; align-items: baseline; gap: 0.5rem; }
+  .serving-carbs .value { font-size: 1.5rem; font-weight: 600; color: var(--amber); }
+  .serving-carbs .label { font-size: 0.85rem; color: var(--muted); }
+
+  .nutrition-grid {
+    margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+  .nutrition-grid .item {
+    display: flex; justify-content: space-between;
+    padding: 0.35rem 0; border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+  .nutrition-grid .item .label { color: var(--muted); }
+
+  .conflict-badge {
+    display: inline-block; margin-top: 0.5rem; padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600;
+    background: rgba(248, 113, 113, 0.15); color: var(--red);
+  }
+
+  .error-msg { color: var(--red); font-size: 0.95rem; }
+
+  /* Status bar */
+  .status {
+    text-align: center; padding: 0.5rem; font-size: 0.8rem; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>CarbTrack AU</h1>
+  <p>Scan a barcode to look up carb data</p>
+</header>
+
+<main>
+  <div id="reader"></div>
+
+  <div class="manual-entry">
+    <input type="text" id="barcode-input" placeholder="Enter barcode" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+    <button id="lookup-btn">Look up</button>
+  </div>
+
+  <div class="serving-row">
+    <label for="serving-input">Serving:</label>
+    <input type="number" id="serving-input" min="1" max="9999" step="1" placeholder="g">
+    <span>grams</span>
+  </div>
+
+  <div class="result-card" id="result-card">
+    <div id="result-content"></div>
+  </div>
+
+  <div class="status" id="status">Initialising camera&hellip;</div>
+</main>
+
+<script src="/static/html5-qrcode.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const API_BASE = window.location.origin;
+  const readerEl = document.getElementById("reader");
+  const barcodeInput = document.getElementById("barcode-input");
+  const lookupBtn = document.getElementById("lookup-btn");
+  const servingInput = document.getElementById("serving-input");
+  const resultCard = document.getElementById("result-card");
+  const resultContent = document.getElementById("result-content");
+  const statusEl = document.getElementById("status");
+
+  let lastFood = null;
+  let scanner = null;
+  let lastScan = { barcode: null, ts: 0 };
+
+  // --- Scanner setup ---
+  function initScanner() {
+    scanner = new Html5Qrcode("reader");
+    scanner.start(
+      { facingMode: "environment" },
+      {
+        fps: 10,
+        qrbox: function (viewfinderWidth, viewfinderHeight) {
+          var s = Math.min(viewfinderWidth, viewfinderHeight);
+          return { width: Math.floor(s * 0.85), height: Math.floor(s * 0.4) };
+        },
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A,
+        ],
+      },
+      onScanSuccess,
+      function () { /* ignore scan failure noise */ }
+    ).then(function () {
+      statusEl.textContent = "Point camera at a barcode";
+    }).catch(function (err) {
+      statusEl.textContent = "Camera unavailable \u2014 use manual entry";
+      console.warn("Camera init failed:", err);
+    });
+  }
+
+  function onScanSuccess(decodedText) {
+    // Debounce: ignore repeat scans of the same barcode within 3 s
+    if (lastScan.barcode === decodedText && Date.now() - lastScan.ts < 3000) {
+      return;
+    }
+    lastScan = { barcode: decodedText, ts: Date.now() };
+    barcodeInput.value = decodedText;
+    lookupBarcode(decodedText);
+  }
+
+  // --- API lookup ---
+  function isValidBarcode(str) {
+    return /^\d{8,14}$/.test(str);
+  }
+
+  function lookupBarcode(barcode) {
+    barcode = barcode.trim();
+    if (!barcode) return;
+    if (!isValidBarcode(barcode)) {
+      resultContent.innerHTML = '<p class="error-msg">Enter a valid barcode (8\u201314 digits)</p>';
+      resultCard.className = "result-card visible error";
+      statusEl.textContent = "Invalid barcode format";
+      return;
+    }
+
+    statusEl.textContent = "Looking up " + barcode + "\u2026";
+    resultCard.className = "result-card";
+
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 8000);
+
+    fetch(API_BASE + "/foods/barcode/" + encodeURIComponent(barcode), {
+      signal: controller.signal
+    })
+      .then(function (res) {
+        clearTimeout(timeout);
+        if (!res.ok) {
+          if (res.status === 404) throw new Error("No food found for barcode " + barcode);
+          throw new Error("API error (" + res.status + ")");
+        }
+        return res.json().catch(function () {
+          throw new Error("Unexpected response from server");
+        });
+      })
+      .then(function (food) {
+        lastFood = food;
+        renderFood(food);
+        statusEl.textContent = "Scan another barcode or enter one below";
+      })
+      .catch(function (err) {
+        clearTimeout(timeout);
+        lastFood = null;
+        var msg;
+        if (err.name === "AbortError") {
+          msg = "Request timed out \u2014 check your network connection";
+        } else if (!navigator.onLine) {
+          msg = "You appear to be offline \u2014 connect and try again";
+        } else {
+          msg = err.message;
+        }
+        resultContent.innerHTML = '<p class="error-msg">' + escapeHtml(msg) + "</p>";
+        resultCard.className = "result-card visible error";
+        statusEl.textContent = "Try another barcode";
+      });
+  }
+
+  // --- Rendering ---
+  function renderFood(food) {
+    if (food.carbs_per_100g == null || !isFinite(food.carbs_per_100g)) {
+      resultContent.innerHTML = '<p class="error-msg">Carb data missing for this food. Do not use for dosing.</p>';
+      resultCard.className = "result-card visible error";
+      return;
+    }
+
+    var html = "";
+    html += '<div class="food-name">' + escapeHtml(food.name) + "</div>";
+    if (food.brand) html += '<div class="food-brand">' + escapeHtml(food.brand) + "</div>";
+    if (food.category) html += '<div class="food-category">' + escapeHtml(food.category) + "</div>";
+
+    if (food.conflict_flag) {
+      html += '<span class="conflict-badge">Data conflict</span>';
+    }
+
+    html += '<div class="carb-hero">';
+    html += '<span class="value">' + formatNum(food.carbs_per_100g) + "</span>";
+    html += '<span class="unit">g carbs per 100 g</span>';
+    html += "</div>";
+
+    html += '<div class="serving-carbs" id="serving-carbs"></div>';
+
+    // Nutrition grid
+    var items = [
+      ["Energy", food.energy_kj != null ? formatNum(food.energy_kj) + " kJ" : null],
+      ["Sugars", food.sugars_per_100g != null ? formatNum(food.sugars_per_100g) + " g" : null],
+      ["Fibre", food.fibre_per_100g != null ? formatNum(food.fibre_per_100g) + " g" : null],
+      ["Protein", food.protein_per_100g != null ? formatNum(food.protein_per_100g) + " g" : null],
+      ["Fat", food.fat_per_100g != null ? formatNum(food.fat_per_100g) + " g" : null],
+      ["Sodium", food.sodium_mg != null ? formatNum(food.sodium_mg) + " mg" : null],
+      ["GI", food.gi_rating || null],
+      ["Serving", food.serving_size_g != null ? formatNum(food.serving_size_g) + " g" : null],
+    ];
+    var hasNutrition = items.some(function (i) { return i[1] != null; });
+    if (hasNutrition) {
+      html += '<div class="nutrition-grid">';
+      items.forEach(function (i) {
+        if (i[1] != null) {
+          html += '<div class="item"><span class="label">' + i[0] + '</span><span>' + i[1] + "</span></div>";
+        }
+      });
+      html += "</div>";
+    }
+
+    resultContent.innerHTML = html;
+    resultCard.className = "result-card visible";
+
+    // Pre-fill serving size from food data if available and field is empty
+    if (food.serving_size_g && !servingInput.value) {
+      servingInput.value = Math.round(food.serving_size_g);
+    }
+    updateServingCarbs();
+  }
+
+  function updateServingCarbs() {
+    var el = document.getElementById("serving-carbs");
+    if (!el || !lastFood) return;
+
+    var grams = parseFloat(servingInput.value);
+    if (!grams || grams <= 0 || grams > 9999) {
+      el.className = "serving-carbs";
+      return;
+    }
+
+    var carbsForServing = (lastFood.carbs_per_100g * grams) / 100;
+    el.innerHTML =
+      '<span class="value">' + formatNum(carbsForServing) + ' g</span>' +
+      '<span class="label">carbs for ' + Math.round(grams) + ' g serve</span>';
+    el.className = "serving-carbs visible";
+  }
+
+  // --- Utilities ---
+  function formatNum(n) {
+    return Number(n).toFixed(1);
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement("div");
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  // --- Event listeners ---
+  lookupBtn.addEventListener("click", function () {
+    lookupBarcode(barcodeInput.value);
+  });
+
+  barcodeInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      lookupBarcode(barcodeInput.value);
+    }
+  });
+
+  servingInput.addEventListener("input", updateServingCarbs);
+
+  // --- Init ---
+  if (typeof Html5Qrcode !== "undefined") {
+    initScanner();
+  } else {
+    statusEl.textContent = "Scanner library failed to load \u2014 use manual entry";
+  }
+})();
+</script>
+</body>
+</html>

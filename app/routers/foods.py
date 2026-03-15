@@ -80,6 +80,16 @@ def list_foods(
     return session.exec(statement).all()
 
 
+@router.get("/barcode/{barcode}")
+def get_food_by_barcode(barcode: str, session: Session = Depends(get_session)):
+    food = session.exec(
+        select(Food).where(Food.barcode == barcode, Food.active == True)  # noqa: E712
+    ).first()
+    if not food:
+        raise HTTPException(status_code=404, detail="Food not found")
+    return food
+
+
 @router.get("/{food_id}")
 def get_food(
     food_id: int,
@@ -88,16 +98,6 @@ def get_food(
 ):
     food = session.get(Food, food_id)
     if not food or (not include_inactive and not food.active):
-        raise HTTPException(status_code=404, detail="Food not found")
-    return food
-
-
-@router.get("/barcode/{barcode}")
-def get_food_by_barcode(barcode: str, session: Session = Depends(get_session)):
-    food = session.exec(
-        select(Food).where(Food.barcode == barcode, Food.active == True)  # noqa: E712
-    ).first()
-    if not food:
         raise HTTPException(status_code=404, detail="Food not found")
     return food
 

@@ -194,7 +194,9 @@
         }
       }
     })
-    .catch(function () { /* non-fatal — import buttons will warn */ });
+    .catch(function (err) {
+      console.error("Failed to resolve OFF source_id:", err);
+    });
 
   // --- Scanner setup ---
   function initScanner() {
@@ -295,8 +297,14 @@
   function searchOFF(barcode) {
     statusEl.textContent = "Not in CarbTrack \u2014 searching Open Food Facts\u2026";
 
-    return fetch(OFF_API + encodeURIComponent(barcode) + ".json")
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 8000);
+
+    return fetch(OFF_API + encodeURIComponent(barcode) + ".json", {
+      signal: controller.signal
+    })
       .then(function (res) {
+        clearTimeout(timeout);
         if (!res.ok) throw new Error("Open Food Facts returned " + res.status);
         return res.json();
       })
@@ -309,14 +317,20 @@
           return null;
         }
         var mapped = mapOFFProduct(data.product, barcode);
+        mapped._off_raw = data.product;
         lastFood = mapped;
         renderFood(mapped, "off");
         statusEl.textContent = "Found on Open Food Facts \u2014 import to CarbTrack?";
         return null; // renderFood handles display
       })
-      .catch(function () {
+      .catch(function (err) {
+        clearTimeout(timeout);
+        console.error("OFF lookup error for barcode", barcode, ":", err);
         lastFood = null;
-        resultContent.innerHTML = '<p class="error-msg">Barcode ' + escapeHtml(barcode) + ' not found in CarbTrack. Open Food Facts lookup failed.</p>';
+        var msg = (err && err.name === "AbortError")
+          ? "Open Food Facts request timed out"
+          : (err && err.message) ? err.message : "Open Food Facts lookup failed";
+        resultContent.innerHTML = '<p class="error-msg">Barcode ' + escapeHtml(barcode) + ' not in CarbTrack. ' + escapeHtml(msg) + '</p>';
         resultCard.className = "result-card visible error";
         statusEl.textContent = "Try another barcode";
         return null;
@@ -324,6 +338,12 @@
   }
 
   // --- Map OFF product to CarbTrack schema ---
+  function safeFloat(val) {
+    if (val == null || val === "") return null;
+    var n = parseFloat(val);
+    return isFinite(n) ? n : null;
+  }
+
   function mapOFFProduct(product, barcode) {
     var n = product.nutriments || {};
     return {
@@ -333,17 +353,15 @@
       category: (product.categories_tags && product.categories_tags.length > 0)
         ? product.categories_tags[product.categories_tags.length - 1].replace("en:", "").replace(/-/g, " ")
         : null,
-      carbs_per_100g: (n.carbohydrates_100g != null && n.carbohydrates_100g !== "")
-        ? parseFloat(n.carbohydrates_100g) : null,
-      sugars_per_100g: n.sugars_100g != null ? parseFloat(n.sugars_100g) : null,
-      fibre_per_100g: n.fiber_100g != null ? parseFloat(n.fiber_100g) : null,
-      energy_kj: n["energy-kj_100g"] != null ? parseFloat(n["energy-kj_100g"]) : null,
-      protein_per_100g: n.proteins_100g != null ? parseFloat(n.proteins_100g) : null,
-      fat_per_100g: n.fat_100g != null ? parseFloat(n.fat_100g) : null,
-      sodium_mg: n.sodium_100g != null ? parseFloat(n.sodium_100g) * 1000 : null,
+      carbs_per_100g: safeFloat(n.carbohydrates_100g),
+      sugars_per_100g: safeFloat(n.sugars_100g),
+      fibre_per_100g: safeFloat(n.fiber_100g),
+      energy_kj: safeFloat(n["energy-kj_100g"]),
+      protein_per_100g: safeFloat(n.proteins_100g),
+      fat_per_100g: safeFloat(n.fat_100g),
+      sodium_mg: n.sodium_100g != null ? safeFloat(n.sodium_100g) * 1000 : null,
       serving_size_g: parseServingSize(product.serving_size),
-      source_confidence: 0.7,
-      _off_raw: product
+      source_confidence: 0.7
     };
   }
 
@@ -463,18 +481,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mapped_data: JSON.stringify(mapped) })
         }).then(function (res) {
-          if (res.status === 404) {
-            // /set-mapped endpoint doesn't exist — fall back, staging entry is still usable
-            if (btn) { btn.textContent = "Added"; }
-            resultContent.insertAdjacentHTML("beforeend", '<p class="success-msg" style="margin-top:0.75rem">Added to staging (needs field mapping before approval)</p>');
-            return { partial: true };
-          }
           if (!res.ok) return res.json().then(function (e) { throw new Error(e.detail || "Set mapped data failed"); });
-          return { partial: false };
         });
       })
-      .then(function (result) {
-        if (result && result.partial) return;
+      .then(function () {
         if (btn) { btn.textContent = "Added"; }
         resultContent.insertAdjacentHTML("beforeend", '<p class="success-msg" style="margin-top:0.75rem">Submitted to staging \u2014 ready for approval</p>');
         statusEl.textContent = "Added to staging \u2014 ready for approval";
@@ -487,11 +497,15 @@
 
   // --- Import: quick add (direct to foods) ---
   function importQuickAdd(food) {
+    if (!offSourceId) {
+      statusEl.textContent = "Cannot import \u2014 Open Food Facts source not found in CarbTrack";
+      return;
+    }
     var btn = document.getElementById("btn-quick");
     if (btn) { btn.disabled = true; btn.textContent = "Adding\u2026"; }
 
     var body = buildMappedData(food);
-    body.source_id = offSourceId || null;
+    body.source_id = offSourceId;
     body.source_confidence = food.source_confidence || 0.7;
 
     fetch(API_BASE + "/foods", {

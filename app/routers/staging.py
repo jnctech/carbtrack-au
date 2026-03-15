@@ -260,8 +260,15 @@ class SetMappedData(BaseModel):
             raise ValueError(f"mapped_data must be valid JSON: {exc}") from exc
         if not isinstance(parsed, dict):
             raise ValueError("mapped_data must be a JSON object")
-        if "name" not in parsed or "carbs_per_100g" not in parsed:
-            raise ValueError("mapped_data must contain 'name' and 'carbs_per_100g'")
+        if not isinstance(parsed.get("name"), str) or not parsed["name"].strip():
+            raise ValueError("mapped_data must contain a non-empty 'name' string")
+        carbs = parsed.get("carbs_per_100g")
+        if carbs is None:
+            raise ValueError("mapped_data must contain 'carbs_per_100g'")
+        if not isinstance(carbs, (int, float)) or isinstance(carbs, bool):
+            raise ValueError("carbs_per_100g must be a number")
+        if carbs < 0:
+            raise ValueError("carbs_per_100g cannot be negative")
         return v
 
 

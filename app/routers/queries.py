@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select
 
 from app.ai_helpers import (
@@ -56,6 +56,13 @@ class ConstructResponse(BaseModel):
 class MapFieldsRequest(BaseModel):
     source_id: int
     raw_json: str
+
+    @field_validator("raw_json")
+    @classmethod
+    def raw_json_size_limit(cls, v: str) -> str:
+        if len(v) > 1_000_000:
+            raise ValueError("raw_json exceeds 1 MB maximum size")
+        return v
 
 
 @router.post("/construct", response_model=ConstructResponse)

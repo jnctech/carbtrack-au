@@ -274,6 +274,15 @@ class TestMapFields:
         )
         assert response.status_code == 400
 
+    def test_map_fields_rejects_oversized_payload(self, sources_with_api):
+        client, api_source_id, _ = sources_with_api
+        huge = json.dumps({"x": "a" * 1_100_000})
+        response = client.post(
+            "/query-builder/map-fields",
+            json={"source_id": api_source_id, "raw_json": huge},
+        )
+        assert response.status_code == 422
+
 
 class TestQueryTemplate:
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key", "SONNET_MODEL": "test-model"})

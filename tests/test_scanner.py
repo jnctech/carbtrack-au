@@ -1,8 +1,10 @@
-"""Tests for barcode scanner static page and static file serving."""
+"""Tests for barcode scanner static page, static file serving, and OFF import."""
+
+import json
 
 import pytest
 
-from app.models import Food, Source
+from app.models import Food, Source, Staging
 
 
 def _seed(session):
@@ -22,6 +24,14 @@ def _seed(session):
     session.commit()
     session.refresh(food)
     return food
+
+
+def _off_source(session):
+    source = Source(name="Open Food Facts AU", tier=1)
+    session.add(source)
+    session.commit()
+    session.refresh(source)
+    return source
 
 
 # --- Static file serving ---
@@ -95,3 +105,118 @@ def test_barcode_route_not_shadowed_by_food_id(client, session):
     resp = client.get("/foods/barcode/0000000000001")
     assert resp.status_code == 200
     assert resp.json()["name"] == "Target"
+
+
+# --- Scanner page: OFF import elements ---
+
+
+def test_scanner_page_contains_off_api(client):
+    resp = client.get("/static/scanner.html")
+    assert "openfoodfacts.org" in resp.text
+
+
+def test_scanner_page_contains_import_buttons(client):
+    resp = client.get("/static/scanner.html")
+    assert "btn-staging" in resp.text
+    assert "btn-quick" in resp.text
+
+
+# --- set-mapped endpoint ---
+
+
+def test_set_mapped_data(client, session):
+    source = _off_source(session)
+    resp = client.post("/staging", json={
+        "source_id": source.id,
+        "raw_data": json.dumps({"product_name": "Test"}),
+    })
+    assert resp.status_code == 201
+    staging_id = resp.json()["id"]
+
+    mapped = json.dumps({"name": "Test Food", "carbs_per_100g": 50.0})
+    resp = client.post(f"/staging/{staging_id}/set-mapped", json={
+        "mapped_data": mapped,
+    })
+    assert resp.status_code == 200
+    assert resp.json()["mapped_data"] == mapped
+
+
+def test_set_mapped_rejects_invalid_json(client, session):
+    source = _off_source(session)
+    resp = client.post("/staging", json={
+        "source_id": source.id,
+        "raw_data": json.dumps({"test": True}),
+    })
+    staging_id = resp.json()["id"]
+
+    resp = client.post(f"/staging/{staging_id}/set-mapped", json={
+        "mapped_data": "not json",
+    })
+    assert resp.status_code == 422
+
+
+def test_set_mapped_requires_name_and_carbs(client, session):
+    source = _off_source(session)
+    resp = client.post("/staging", json={
+        "source_id": source.id,
+        "raw_data": json.dumps({"test": True}),
+    })
+    staging_id = resp.json()["id"]
+
+    resp = client.post(f"/staging/{staging_id}/set-mapped", json={
+        "mapped_data": json.dumps({"name": "Test"}),
+    })
+    assert resp.status_code == 422
+
+
+def test_set_mapped_not_found(client):
+    resp = client.post("/staging/9999/set-mapped", json={
+        "mapped_data": json.dumps({"name": "X", "carbs_per_100g": 1.0}),
+    })
+    assert resp.status_code == 404
+
+
+def test_set_mapped_rejects_approved_entry(client, session):
+    source = _off_source(session)
+    staging = Staging(
+        source_id=source.id,
+        raw_data=json.dumps({"test": True}),
+        status="approved",
+    )
+    session.add(staging)
+    session.commit()
+    session.refresh(staging)
+
+    resp = client.post(f"/staging/{staging.id}/set-mapped", json={
+        "mapped_data": json.dumps({"name": "X", "carbs_per_100g": 1.0}),
+    })
+    assert resp.status_code == 400
+
+
+# --- Quick add (direct POST /foods) ---
+
+
+def test_quick_add_creates_food(client, session):
+    source = _off_source(session)
+    resp = client.post("/foods", json={
+        "name": "OFF Product",
+        "barcode": "9999999999999",
+        "carbs_per_100g": 45.2,
+        "source_id": source.id,
+        "source_confidence": 0.7,
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "OFF Product"
+    assert data["carbs_per_100g"] == pytest.approx(45.2)
+    assert data["source_confidence"] == pytest.approx(0.7)
+
+
+def test_quick_add_duplicate_barcode_returns_409(client, session):
+    _seed(session)
+    resp = client.post("/foods", json={
+        "name": "Duplicate",
+        "barcode": "9300652001709",
+        "carbs_per_100g": 50.0,
+    })
+    assert resp.status_code == 409

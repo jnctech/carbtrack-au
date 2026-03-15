@@ -89,22 +89,7 @@ def seed_foods() -> None:
         foods_data = json.loads(SEED_FOODS_FILE.read_text(encoding="utf-8"))
         now = _utcnow()
         for entry in foods_data:
-            food = Food(
-                name=entry["name"],
-                brand=entry.get("brand"),
-                category=entry.get("category"),
-                barcode=entry.get("barcode"),
-                source_id=default_source_id,
-                source_confidence=entry.get("source_confidence", 0.9),
-                carbs_per_100g=entry["carbs_per_100g"],
-                sugars_per_100g=entry.get("sugars_per_100g"),
-                fibre_per_100g=entry.get("fibre_per_100g"),
-                energy_kj=entry.get("energy_kj"),
-                protein_per_100g=entry.get("protein_per_100g"),
-                fat_per_100g=entry.get("fat_per_100g"),
-                sodium_mg=entry.get("sodium_mg"),
-                serving_size_g=entry.get("serving_size_g"),
-            )
+            food = Food(**entry, source_id=default_source_id)
             session.add(food)
             session.flush()  # populate food.id for FoodSourceRef
 

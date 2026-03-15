@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlmodel import Session, select
 
-from app.models import FoodSourceRef, Source, Staging
+from app.models import FoodSourceRef, Source, Staging, _utcnow
 
 
 @pytest.fixture(name="seeded_client")
@@ -99,10 +99,26 @@ class TestSubmitStaging:
         assert response.status_code == 201
         data = response.json()
         assert data["source_id"] == source_id
-        assert data["raw_data"] == raw
         assert data["status"] == "pending"
         assert data["mapped_data"] is None
         assert data["reviewed_at"] is None
+        # raw_data must NOT appear in API response (StagingResponse excludes it)
+        assert "raw_data" not in data
+
+    def test_submit_rejects_invalid_json(self, seeded_client):
+        client, source_id = seeded_client
+        response = client.post(
+            "/staging", json={"source_id": source_id, "raw_data": "not valid json"}
+        )
+        assert response.status_code == 422
+
+    def test_submit_rejects_oversized_payload(self, seeded_client):
+        client, source_id = seeded_client
+        huge = json.dumps({"x": "a" * 1_100_000})
+        response = client.post(
+            "/staging", json={"source_id": source_id, "raw_data": huge}
+        )
+        assert response.status_code == 422
 
 
 class TestApproveStaging:
@@ -162,6 +178,22 @@ class TestApproveStaging:
             assert refs[0].source_id == source_id
             assert "raw_response_json" not in repr(refs[0])
 
+    def test_approve_response_excludes_raw_data(self, seeded_client, engine):
+        """API response must not contain raw_data field."""
+        client, source_id = seeded_client
+        secret_marker = "SECRET_SHOULD_NOT_APPEAR"
+        raw = json.dumps({"product": "test", "secret": secret_marker})
+        mapped = _mapped_data(name="ResponseTest", barcode=None)
+
+        r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
+        staging_id = r.json()["id"]
+        _set_mapped_data(engine, staging_id, mapped)
+
+        response = client.post(f"/staging/{staging_id}/approve")
+        assert response.status_code == 200
+        assert "raw_data" not in response.json()
+        assert secret_marker not in response.text
+
     def test_approve_not_found(self, client):
         response = client.post("/staging/999/approve")
         assert response.status_code == 404
@@ -180,6 +212,44 @@ class TestApproveStaging:
         response = client.post(f"/staging/{staging_id}/approve")
         assert response.status_code == 400
         assert "approved" in response.json()["detail"]
+
+    def test_approve_rejects_negative_carbs(self, seeded_client, engine):
+        client, source_id = seeded_client
+        raw = json.dumps({"product": "test"})
+        mapped = json.dumps({"name": "NegCarbs", "carbs_per_100g": -5.0})
+
+        r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
+        staging_id = r.json()["id"]
+        _set_mapped_data(engine, staging_id, mapped)
+
+        response = client.post(f"/staging/{staging_id}/approve")
+        assert response.status_code == 400
+        assert "negative" in response.json()["detail"]
+
+    def test_approve_rejects_string_carbs(self, seeded_client, engine):
+        client, source_id = seeded_client
+        raw = json.dumps({"product": "test"})
+        mapped = json.dumps({"name": "StrCarbs", "carbs_per_100g": "67.3"})
+
+        r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
+        staging_id = r.json()["id"]
+        _set_mapped_data(engine, staging_id, mapped)
+
+        response = client.post(f"/staging/{staging_id}/approve")
+        assert response.status_code == 400
+        assert "number" in response.json()["detail"]
+
+    def test_approve_rejects_invalid_mapped_json(self, seeded_client, engine):
+        client, source_id = seeded_client
+        raw = json.dumps({"product": "test"})
+
+        r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
+        staging_id = r.json()["id"]
+        _set_mapped_data(engine, staging_id, "not valid json")
+
+        response = client.post(f"/staging/{staging_id}/approve")
+        assert response.status_code == 400
+        assert "valid JSON" in response.json()["detail"]
 
     def test_approve_missing_carbs_per_100g(self, seeded_client, engine):
         client, source_id = seeded_client
@@ -338,6 +408,41 @@ class TestConflictDetection:
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.json()["status"] == "approved"
+
+    def test_conflict_zero_carb_ref_triggers_hold(self, seeded_client, engine):
+        """A zero-carb existing ref should trigger conflict for manual review."""
+        client, source_id = seeded_client
+        from app.models import Food
+
+        # Create a food + ref with reported_carbs=0 directly (data quality issue)
+        with Session(engine) as session:
+            food = Food(
+                name="Zero Carb Item",
+                carbs_per_100g=0.0,
+                source_id=source_id,
+            )
+            session.add(food)
+            session.flush()
+            ref = FoodSourceRef(
+                food_id=food.id,
+                source_id=source_id,
+                reported_carbs=0.0,
+                queried_at=_utcnow(),
+            )
+            session.add(ref)
+            session.commit()
+
+        # Submit a staging entry matching by name
+        raw = json.dumps({"product": "Zero Carb Item"})
+        mapped = _mapped_data(
+            name="Zero Carb Item", brand=None, barcode=None, carbs_per_100g=15.0
+        )
+        r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
+        _set_mapped_data(engine, r.json()["id"], mapped)
+
+        response = client.post(f"/staging/{r.json()['id']}/approve")
+        assert response.json()["status"] == "conflict"
+        assert "reported_carbs=0" in response.json()["conflict_notes"]
 
     def test_conflict_just_over_5_percent(self, seeded_client, engine):
         """5.1% variance SHOULD trigger conflict."""

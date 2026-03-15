@@ -1,0 +1,83 @@
+[
+  {
+    "name": "AUSNUT 2011-13",
+    "tier": 1,
+    "url": "https://www.foodstandards.gov.au/science-data/monitoringnutrients/ausnut/ausnut2011-13",
+    "api_base": null,
+    "api_notes": "CSV bulk download only — no API. FSANZ publishes as Excel/CSV files. Values already per 100g.",
+    "opus_reliability": "Gold standard. Australian government dataset maintained by FSANZ. Most comprehensive AU nutrient database with ~5700 foods. Values are laboratory-analysed, not label-derived.",
+    "opus_conflicts": "Dataset is from 2011-13 — some branded products may have reformulated since. Cross-reference with current labels for branded items. Generic/unbranded foods (e.g. 'apple, raw') remain reliable."
+  },
+  {
+    "name": "Open Food Facts AU",
+    "tier": 1,
+    "url": "https://au.openfoodfacts.org/",
+    "api_base": "https://world.openfoodfacts.org/api/v2",
+    "api_notes": "Free REST API, no auth required. Search by barcode: /product/{barcode}.json. Search by name: /cgi/search.pl?search_terms={name}&cc=au. Rate limit: ~100 req/min.",
+    "opus_reliability": "Community-maintained with strong AU coverage for branded/packaged foods. Barcode-to-nutrition mapping is the primary value. Data quality varies — some entries are OCR'd from labels with errors.",
+    "opus_conflicts": "Nutrition values may differ from AUSNUT for the same product due to label vs lab analysis differences. Always prefer AUSNUT for generic foods. OFF is strongest for barcode-identified branded products not in AUSNUT."
+  },
+  {
+    "name": "GI Foundation AU",
+    "tier": 1,
+    "url": "https://www.gisymbol.com/",
+    "api_base": null,
+    "api_notes": "No public API. GI values available via their searchable database at gisymbol.com. Manual lookup or scraping required. Provides GI rating (low/medium/high) and some carb data.",
+    "opus_reliability": "Authoritative source for glycemic index values in Australia. GI Symbol Program tests are laboratory-certified. Carb data cross-referenced with AUSNUT.",
+    "opus_conflicts": "Limited product coverage — only foods enrolled in the GI Symbol Program. Carb values should match AUSNUT for overlapping products. Primary value is the gi_rating field, not nutrition data."
+  },
+  {
+    "name": "Diabetes Australia",
+    "tier": 2,
+    "url": "https://www.diabetesaustralia.com.au/",
+    "api_base": null,
+    "api_notes": "No API. Nutrition guidance available on website. Manual extraction from educational materials and food guides.",
+    "opus_reliability": "Disease-specific nutrition guidance from Australia's peak diabetes body. Carb-focused content designed for diabetes management. Information is curated by dietitians.",
+    "opus_conflicts": "Provides ranges and guidance rather than precise per-product values. Best used to validate categories and general carb ranges, not as a primary data source for specific products."
+  },
+  {
+    "name": "Eat For Health (NHMRC)",
+    "tier": 2,
+    "url": "https://www.eatforhealth.gov.au/",
+    "api_base": null,
+    "api_notes": "No API. Australian Dietary Guidelines published by NHMRC. Nutrient reference values and food group guidance available as downloadable documents.",
+    "opus_reliability": "Government-published national dietary guidelines. General nutrition recommendations, not product-specific data. Useful for category validation and serve size reference.",
+    "opus_conflicts": "Focuses on food groups and serve sizes rather than specific branded products. Serve sizes may differ from manufacturer-stated serves. Not suitable as a primary carb data source."
+  },
+  {
+    "name": "FoodWorks Professional",
+    "tier": 2,
+    "url": "https://www.xyris.com.au/foodworks/",
+    "api_base": null,
+    "api_notes": "Commercial licensed software by Xyris. No public API — requires desktop license. Uses AUSNUT as base dataset with additional branded foods and recipe analysis.",
+    "opus_reliability": "Dietitian-grade database built on AUSNUT with ~4000 additional branded foods. Laboratory-quality data. Used by hospitals and dietetic practices across Australia.",
+    "opus_conflicts": "Commercial license required — cannot bulk-extract data. Useful for manual verification of specific products. Base dataset overlaps with AUSNUT; branded additions may not have public equivalents."
+  },
+  {
+    "name": "CalorieKing AU",
+    "tier": 3,
+    "url": "https://www.calorieking.com.au/",
+    "api_base": null,
+    "api_notes": "Web search interface, no public API. AU-specific version with local branded foods. Manual lookup required.",
+    "opus_reliability": "Commercial database with reasonable AU branded food coverage. Data sourced from manufacturer labels. Popular with consumers but not laboratory-verified.",
+    "opus_conflicts": "Label-derived values may differ from AUSNUT lab values. Some entries may be outdated if products have been reformulated. Use as supplementary source only — cross-reference with Tier 1."
+  },
+  {
+    "name": "NUTTAB 2010",
+    "tier": 3,
+    "url": "https://www.foodstandards.gov.au/science-data/monitoringnutrients/nutrientables/nuttab",
+    "api_base": null,
+    "api_notes": "CSV bulk download from FSANZ. Predecessor to AUSNUT 2011-13. Same format but older dataset.",
+    "opus_reliability": "Government dataset but superseded by AUSNUT 2011-13. Still useful for foods not covered in AUSNUT or for historical comparison. Laboratory-analysed values.",
+    "opus_conflicts": "Older dataset — use only for foods absent from AUSNUT 2011-13. Where both datasets cover the same food, AUSNUT values take precedence. Some foods may have been reformulated since 2010."
+  },
+  {
+    "name": "Nutritionix API",
+    "tier": 3,
+    "url": "https://www.nutritionix.com/",
+    "api_base": "https://trackapi.nutritionix.com/v2",
+    "api_notes": "REST API, requires API key (free tier available). US-centric database. Endpoints: /natural/nutrients (NLP query), /search/instant (autocomplete). Rate limit: 50 req/day (free).",
+    "opus_reliability": "Large database (~1M items) but US-focused. Has some AU products via barcode matching. NLP query endpoint is convenient but may return US equivalents instead of AU products.",
+    "opus_conflicts": "US nutrition labelling uses calories (kcal) not kJ — conversion required (kcal * 4.184). Serving sizes follow US standards, not AU. Lowest confidence tier — use only when AU sources have no data."
+  }
+]

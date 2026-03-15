@@ -5,15 +5,12 @@ import json
 import pytest
 from sqlmodel import Session, select
 
-from app.database import get_session
-from app.models import FoodSourceRef, Staging
+from app.models import FoodSourceRef, Source, Staging
 
 
 @pytest.fixture(name="seeded_client")
 def seeded_client_fixture(client, engine):
     """Client with a seeded source for staging tests."""
-    from app.models import Source
-
     with Session(engine) as session:
         source = Source(name="Test Source", tier=1, url="https://example.com")
         session.add(source)
@@ -24,7 +21,7 @@ def seeded_client_fixture(client, engine):
     return client, source_id
 
 
-def _mapped_data(**overrides):
+def _mapped_data(**overrides) -> str:
     """Build a valid mapped_data JSON string."""
     data = {
         "name": "Weet-Bix",
@@ -45,18 +42,17 @@ def _mapped_data(**overrides):
     return json.dumps(data)
 
 
-def _set_mapped_data(client, staging_id: int, mapped_data: str):
+def _set_mapped_data(engine, staging_id: int, mapped_data: str) -> None:
     """Set mapped_data on a staging entry directly via DB.
 
-    In production this would be done by POST /staging/{id}/map (Phase 3).
-    For Phase 2 tests, we write directly to the staging row.
+    In production this is done by POST /staging/{id}/map (Phase 3).
+    Phase 2 tests write directly to the staging row to bypass that step.
     """
-    for session in client.app.dependency_overrides[get_session]():
+    with Session(engine) as session:
         staging = session.get(Staging, staging_id)
         staging.mapped_data = mapped_data
         session.add(staging)
         session.commit()
-        break
 
 
 class TestListStaging:
@@ -120,14 +116,14 @@ class TestApproveStaging:
         assert response.status_code == 400
         assert "mapped_data" in response.json()["detail"]
 
-    def test_approve_promotes_to_foods(self, seeded_client):
+    def test_approve_promotes_to_foods(self, seeded_client, engine):
         client, source_id = seeded_client
         raw = json.dumps({"product": "Weet-Bix"})
         mapped = _mapped_data()
 
         r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
         staging_id = r.json()["id"]
-        _set_mapped_data(client, staging_id, mapped)
+        _set_mapped_data(engine, staging_id, mapped)
 
         response = client.post(f"/staging/{staging_id}/approve")
         assert response.status_code == 200
@@ -154,7 +150,7 @@ class TestApproveStaging:
 
         r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
         staging_id = r.json()["id"]
-        _set_mapped_data(client, staging_id, mapped)
+        _set_mapped_data(engine, staging_id, mapped)
 
         client.post(f"/staging/{staging_id}/approve")
 
@@ -170,14 +166,14 @@ class TestApproveStaging:
         response = client.post("/staging/999/approve")
         assert response.status_code == 404
 
-    def test_approve_already_approved(self, seeded_client):
+    def test_approve_already_approved(self, seeded_client, engine):
         client, source_id = seeded_client
         raw = json.dumps({"product": "test"})
         mapped = _mapped_data(name="TestFood1", barcode=None)
 
         r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
         staging_id = r.json()["id"]
-        _set_mapped_data(client, staging_id, mapped)
+        _set_mapped_data(engine, staging_id, mapped)
 
         client.post(f"/staging/{staging_id}/approve")
 
@@ -185,14 +181,14 @@ class TestApproveStaging:
         assert response.status_code == 400
         assert "approved" in response.json()["detail"]
 
-    def test_approve_missing_carbs_per_100g(self, seeded_client):
+    def test_approve_missing_carbs_per_100g(self, seeded_client, engine):
         client, source_id = seeded_client
         raw = json.dumps({"product": "test"})
         mapped = json.dumps({"name": "NoCarbsFood"})
 
         r = client.post("/staging", json={"source_id": source_id, "raw_data": raw})
         staging_id = r.json()["id"]
-        _set_mapped_data(client, staging_id, mapped)
+        _set_mapped_data(engine, staging_id, mapped)
 
         response = client.post(f"/staging/{staging_id}/approve")
         assert response.status_code == 400
@@ -200,7 +196,7 @@ class TestApproveStaging:
 
 
 class TestConflictDetection:
-    def test_no_conflict_within_threshold(self, seeded_client):
+    def test_no_conflict_within_threshold(self, seeded_client, engine):
         """Second source with ≤5% carb difference should promote normally."""
         client, source_id = seeded_client
 
@@ -210,7 +206,7 @@ class TestConflictDetection:
             name="Tim Tams", barcode="9310072000336", carbs_per_100g=67.0
         )
         r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
-        _set_mapped_data(client, r1.json()["id"], mapped1)
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
         client.post(f"/staging/{r1.json()['id']}/approve")
 
         # Second entry — within 5% (67.0 → 69.0 = 2.99%)
@@ -219,13 +215,13 @@ class TestConflictDetection:
             name="Tim Tams", barcode="9310072000336x", carbs_per_100g=69.0
         )
         r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
-        _set_mapped_data(client, r2.json()["id"], mapped2)
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.status_code == 200
         assert response.json()["status"] == "approved"
 
-    def test_conflict_exceeds_threshold(self, seeded_client):
+    def test_conflict_exceeds_threshold(self, seeded_client, engine):
         """Second source with >5% carb difference triggers conflict hold."""
         client, source_id = seeded_client
 
@@ -238,7 +234,7 @@ class TestConflictDetection:
             carbs_per_100g=40.0,
         )
         r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
-        _set_mapped_data(client, r1.json()["id"], mapped1)
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
         client.post(f"/staging/{r1.json()['id']}/approve")
 
         # Second entry — 16.25% variance (40.0 → 46.5)
@@ -250,7 +246,7 @@ class TestConflictDetection:
             carbs_per_100g=46.5,
         )
         r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
-        _set_mapped_data(client, r2.json()["id"], mapped2)
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.status_code == 200
@@ -263,7 +259,37 @@ class TestConflictDetection:
         foods_response = client.get("/foods?q=Tip Top Bread")
         assert len(foods_response.json()) == 1
 
-    def test_conflict_by_barcode_match(self, seeded_client):
+    def test_conflict_does_not_create_food_source_ref(self, seeded_client, engine):
+        """Conflict-held entry must NOT create a new food_source_ref."""
+        client, source_id = seeded_client
+
+        # First entry — baseline
+        raw1 = json.dumps({"product": "Ref Count Food"})
+        mapped1 = _mapped_data(
+            name="Ref Count Food", barcode=None, carbs_per_100g=100.0
+        )
+        r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
+        client.post(f"/staging/{r1.json()['id']}/approve")
+
+        with Session(engine) as session:
+            refs_before = len(session.exec(select(FoodSourceRef)).all())
+
+        # Second entry — >5% variance triggers conflict
+        raw2 = json.dumps({"product": "Ref Count Food v2"})
+        mapped2 = _mapped_data(
+            name="Ref Count Food", barcode=None, carbs_per_100g=120.0
+        )
+        r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
+        client.post(f"/staging/{r2.json()['id']}/approve")
+
+        with Session(engine) as session:
+            refs_after = len(session.exec(select(FoodSourceRef)).all())
+
+        assert refs_after == refs_before  # No new ref created on conflict
+
+    def test_conflict_by_barcode_match(self, seeded_client, engine):
         """Conflict detected via barcode match, not name+brand."""
         client, source_id = seeded_client
 
@@ -273,7 +299,7 @@ class TestConflictDetection:
             name="Product A", barcode="1234567890123", carbs_per_100g=50.0
         )
         r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
-        _set_mapped_data(client, r1.json()["id"], mapped1)
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
         client.post(f"/staging/{r1.json()['id']}/approve")
 
         # Second entry — same barcode, different name, >5% carb variance
@@ -284,12 +310,12 @@ class TestConflictDetection:
             carbs_per_100g=60.0,
         )
         r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
-        _set_mapped_data(client, r2.json()["id"], mapped2)
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.json()["status"] == "conflict"
 
-    def test_conflict_exact_boundary_5_percent_passes(self, seeded_client):
+    def test_conflict_exact_boundary_5_percent_passes(self, seeded_client, engine):
         """Exactly 5% variance should NOT trigger conflict (threshold is >5%)."""
         client, source_id = seeded_client
 
@@ -299,7 +325,7 @@ class TestConflictDetection:
             name="Boundary Food", barcode=None, carbs_per_100g=100.0
         )
         r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
-        _set_mapped_data(client, r1.json()["id"], mapped1)
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
         client.post(f"/staging/{r1.json()['id']}/approve")
 
         # Second entry — exactly 5% (100.0 → 105.0)
@@ -308,12 +334,12 @@ class TestConflictDetection:
             name="Boundary Food", barcode=None, carbs_per_100g=105.0
         )
         r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
-        _set_mapped_data(client, r2.json()["id"], mapped2)
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.json()["status"] == "approved"
 
-    def test_conflict_just_over_5_percent(self, seeded_client):
+    def test_conflict_just_over_5_percent(self, seeded_client, engine):
         """5.1% variance SHOULD trigger conflict."""
         client, source_id = seeded_client
 
@@ -323,7 +349,7 @@ class TestConflictDetection:
             name="Over Boundary", barcode=None, carbs_per_100g=100.0
         )
         r1 = client.post("/staging", json={"source_id": source_id, "raw_data": raw1})
-        _set_mapped_data(client, r1.json()["id"], mapped1)
+        _set_mapped_data(engine, r1.json()["id"], mapped1)
         client.post(f"/staging/{r1.json()['id']}/approve")
 
         # Second entry — 5.1% variance (100.0 → 105.1)
@@ -332,7 +358,7 @@ class TestConflictDetection:
             name="Over Boundary", barcode=None, carbs_per_100g=105.1
         )
         r2 = client.post("/staging", json={"source_id": source_id, "raw_data": raw2})
-        _set_mapped_data(client, r2.json()["id"], mapped2)
+        _set_mapped_data(engine, r2.json()["id"], mapped2)
 
         response = client.post(f"/staging/{r2.json()['id']}/approve")
         assert response.json()["status"] == "conflict"

@@ -22,21 +22,6 @@ class StagingReject(BaseModel):
     note: Optional[str] = None
 
 
-# ── Response model that excludes raw_response_json from food_source_refs ──
-
-
-class FoodSourceRefResponse(BaseModel):
-    id: int
-    food_id: int
-    source_id: int
-    reported_carbs: float
-    queried_at: str
-    query_used: Optional[str] = None
-
-
-# ── Endpoints ──
-
-
 @router.get("")
 def list_staging(
     status: Optional[str] = Query(default="pending"),
@@ -58,10 +43,7 @@ def submit_staging(
     session: Session = Depends(get_session),
 ):
     """Submit raw API response to staging for review."""
-    staging = Staging(
-        source_id=entry.source_id,
-        raw_data=entry.raw_data,
-    )
+    staging = Staging(source_id=entry.source_id, raw_data=entry.raw_data)
     session.add(staging)
     session.commit()
     session.refresh(staging)
@@ -94,10 +76,7 @@ def approve_staging(
             detail="Cannot approve without mapped_data — map fields first",
         )
 
-    # Parse mapped_data
     mapped = json.loads(staging.mapped_data)
-
-    # Validate required field
     mapped_carbs = mapped.get("carbs_per_100g")
     if mapped_carbs is None:
         raise HTTPException(
@@ -105,16 +84,11 @@ def approve_staging(
             detail="mapped_data missing required field: carbs_per_100g",
         )
 
-    # ── Conflict detection ──
-    # Match existing food_source_refs by name+brand or barcode
-    conflict_refs = _find_existing_refs(mapped, session)
-
-    for ref in conflict_refs:
+    for ref in _find_existing_refs(mapped, session):
         if ref.reported_carbs == 0:
             continue
         variance = abs(ref.reported_carbs - mapped_carbs) / ref.reported_carbs
         if variance > 0.05:
-            # Conflict detected — hold entry
             staging.status = "conflict"
             staging.conflict_notes = (
                 f"Carb variance {variance:.1%} exceeds 5% threshold. "
@@ -127,7 +101,6 @@ def approve_staging(
             session.refresh(staging)
             return staging
 
-    # ── No conflict — promote to foods ──
     food = Food(
         barcode=mapped.get("barcode"),
         name=mapped["name"],
@@ -146,18 +119,17 @@ def approve_staging(
         serving_size_g=mapped.get("serving_size_g"),
     )
     session.add(food)
-    session.flush()  # Get food.id before inserting ref
+    session.flush()  # populate food.id before inserting ref
 
-    # Insert food_source_ref on every successful promotion
-    food_source_ref = FoodSourceRef(
-        food_id=food.id,
-        source_id=staging.source_id,
-        reported_carbs=mapped_carbs,
-        queried_at=_utcnow(),
-        raw_response_json=staging.raw_data,
-        query_used=None,
+    session.add(
+        FoodSourceRef(
+            food_id=food.id,
+            source_id=staging.source_id,
+            reported_carbs=mapped_carbs,
+            queried_at=_utcnow(),
+            raw_response_json=staging.raw_data,
+        )
     )
-    session.add(food_source_ref)
 
     staging.status = "approved"
     staging.reviewed_at = _utcnow()
@@ -194,9 +166,7 @@ def reject_staging(
     return staging
 
 
-def _find_existing_refs(
-    mapped: dict, session: Session
-) -> list[FoodSourceRef]:
+def _find_existing_refs(mapped: dict, session: Session) -> list[FoodSourceRef]:
     """Find existing food_source_refs matching by barcode or name+brand."""
     refs: list[FoodSourceRef] = []
 
@@ -204,29 +174,30 @@ def _find_existing_refs(
     name = mapped.get("name")
     brand = mapped.get("brand")
 
+    barcode_matched = False
     if barcode:
-        # Match via barcode → food → food_source_refs
         food = session.exec(
             select(Food).where(Food.barcode == barcode, Food.active == True)  # noqa: E712
         ).first()
         if food:
-            found = session.exec(
-                select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
-            ).all()
-            refs.extend(found)
+            barcode_matched = True
+            refs.extend(
+                session.exec(
+                    select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
+                ).all()
+            )
 
-    if not refs and name:
-        # Match via name+brand → food → food_source_refs
+    if not barcode_matched and name:
         statement = select(Food).where(
             Food.name == name, Food.active == True  # noqa: E712
         )
         if brand:
             statement = statement.where(Food.brand == brand)
-        foods = session.exec(statement).all()
-        for food in foods:
-            found = session.exec(
-                select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
-            ).all()
-            refs.extend(found)
+        for food in session.exec(statement).all():
+            refs.extend(
+                session.exec(
+                    select(FoodSourceRef).where(FoodSourceRef.food_id == food.id)
+                ).all()
+            )
 
     return refs

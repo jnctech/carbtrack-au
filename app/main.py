@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from app.database import init_db
+from app.routers import sources
 
 load_dotenv()
 
@@ -29,6 +30,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+app.include_router(sources.router)
 
 
 @app.get("/health")

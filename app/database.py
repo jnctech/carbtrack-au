@@ -15,7 +15,12 @@ from app.models import Source
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./carbtrack.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/carbtrack.db")
+
+# Ensure SQLite data directory exists (matches Docker volume mount at /app/data)
+if DATABASE_URL.startswith("sqlite"):
+    _db_path = DATABASE_URL.replace("sqlite:///", "")
+    Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 connect_args = {}
 if DATABASE_URL.startswith("sqlite"):

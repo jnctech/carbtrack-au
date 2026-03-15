@@ -48,6 +48,9 @@ env/
 # Environment secrets
 .env
 
+# SQLite databases
+*.db
+
 # Docker
 .docker/
 

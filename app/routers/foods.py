@@ -1,14 +1,15 @@
 """Foods router — CRUD, search, barcode lookup, soft delete."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import Food
+from app.models import Food, _utcnow
 
 router = APIRouter(prefix="/foods", tags=["foods"])
 
@@ -80,9 +81,13 @@ def list_foods(
 
 
 @router.get("/{food_id}")
-def get_food(food_id: int, session: Session = Depends(get_session)):
+def get_food(
+    food_id: int,
+    include_inactive: bool = False,
+    session: Session = Depends(get_session),
+):
     food = session.get(Food, food_id)
-    if not food:
+    if not food or (not include_inactive and not food.active):
         raise HTTPException(status_code=404, detail="Food not found")
     return food
 
@@ -101,7 +106,14 @@ def get_food_by_barcode(barcode: str, session: Session = Depends(get_session)):
 def create_food(food_in: FoodCreate, session: Session = Depends(get_session)):
     food = Food.model_validate(food_in)
     session.add(food)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A food with this barcode already exists",
+        )
     session.refresh(food)
     return food
 
@@ -120,9 +132,16 @@ def update_food(
     for key, value in update_data.items():
         setattr(food, key, value)
 
-    food.updated_at = datetime.now(timezone.utc)
+    food.updated_at = _utcnow()
     session.add(food)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A food with this barcode already exists",
+        )
     session.refresh(food)
     return food
 
@@ -135,7 +154,7 @@ def delete_food(food_id: int, session: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail="Food not found")
 
     food.active = False
-    food.updated_at = datetime.now(timezone.utc)
+    food.updated_at = _utcnow()
     session.add(food)
     session.commit()
     return {"detail": "Food deactivated", "id": food_id}

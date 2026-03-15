@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "${DEPLOY_HOST:-0.0.0.0}:8765:8765"
+    environment:
+      - DATABASE_URL=sqlite:////app/data/carbtrack.db
     env_file:
       - .env
     volumes:

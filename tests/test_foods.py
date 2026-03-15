@@ -101,8 +101,12 @@ def test_soft_delete(client, session):
     assert response.status_code == 200
     assert response.json()["detail"] == "Food deactivated"
 
-    # Food still exists in DB but inactive
+    # Default GET by ID returns 404 for inactive food
     response = client.get(f"/foods/{food.id}")
+    assert response.status_code == 404
+
+    # Explicit include_inactive returns the food
+    response = client.get(f"/foods/{food.id}", params={"include_inactive": True})
     assert response.status_code == 200
     assert response.json()["active"] is False
 
@@ -141,6 +145,17 @@ def test_update_food(client, session):
 def test_update_food_not_found(client):
     response = client.patch("/foods/999", json={"name": "Nope"})
     assert response.status_code == 404
+
+
+def test_create_food_duplicate_barcode(client, session):
+    source = _create_source(session)
+    _create_food(session, source, barcode="9300652000057")
+    response = client.post("/foods", json={
+        "name": "Duplicate Barcode Food",
+        "carbs_per_100g": 10.0,
+        "barcode": "9300652000057",
+    })
+    assert response.status_code == 409
 
 
 def test_pagination(client, session):

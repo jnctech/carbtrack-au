@@ -10,7 +10,8 @@ from app.models import Food, FoodSourceRef, Source, Staging
 
 def test_tables_created(engine):
     """All four tables exist after create_all."""
-    table_names = set(engine.dialect.get_table_names(engine.connect()))
+    with engine.connect() as conn:
+        table_names = set(engine.dialect.get_table_names(conn))
     assert "sources" in table_names
     assert "foods" in table_names
     assert "food_source_refs" in table_names

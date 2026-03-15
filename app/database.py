@@ -33,10 +33,10 @@ def create_db_and_tables() -> None:
 def seed_sources() -> None:
     """Seed sources table from sources.json if table is empty."""
     with Session(engine) as session:
-        count = session.exec(
+        existing = session.exec(
             select(Source).limit(1)
         ).first()
-        if count is not None:
+        if existing is not None:
             logger.info("Sources table already seeded — skipping")
             return
 

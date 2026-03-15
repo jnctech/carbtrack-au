@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from app.database import init_db
-from app.routers import foods, sources, staging
+from app.routers import foods, queries, sources, staging
 
 load_dotenv()
 
@@ -35,6 +35,7 @@ app = FastAPI(
 app.include_router(sources.router)
 app.include_router(foods.router)
 app.include_router(staging.router)
+app.include_router(queries.router)
 
 
 @app.get("/health")

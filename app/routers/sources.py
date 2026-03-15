@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.ai_helpers import get_anthropic_client, get_sonnet_model, parse_ai_json
+from app.ai_helpers import call_sonnet, parse_ai_json
 from app.database import get_session
 from app.models import Source
 
@@ -65,22 +65,18 @@ def generate_query_template(
         f"to find nutrition data for this food from this source."
     )
 
-    client = get_anthropic_client()
-    model = get_sonnet_model()
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=400,
+    response_text = call_sonnet(
         system=(
             "You are a nutrition data API assistant for CarbTrack AU. "
             "Given a food source's API details and a search term, generate a "
             "ready-to-use query template. Return a JSON object with keys: "
             '"curl", "url", "notes". Never execute the query.'
         ),
-        messages=[{"role": "user", "content": user_prompt}],
+        user_prompt=user_prompt,
+        max_tokens=400,
     )
 
-    result = parse_ai_json(response.content[0].text)
+    result = parse_ai_json(response_text)
 
     return {
         "source_id": source_id,

@@ -1,0 +1,10 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlmodel==0.0.24
+aiosqlite==0.21.0
+anthropic==0.52.0
+httpx==0.28.1
+python-dotenv==1.1.0
+ruff==0.11.4
+pytest==8.3.5
+pytest-cov==6.1.1

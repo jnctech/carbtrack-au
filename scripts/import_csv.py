@@ -177,6 +177,11 @@ def import_csv(
         try:
             text = csv_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            logger.warning(
+                "UTF-8 decoding failed for %s — falling back to latin-1. "
+                "Food names with special characters may be incorrect.",
+                csv_path,
+            )
             text = csv_path.read_text(encoding="latin-1")
 
         reader = csv.reader(text.splitlines())
@@ -235,8 +240,8 @@ def import_csv(
                     session.commit()
                     logger.info("Progress: %d rows imported...", created)
 
-            except Exception:
-                logger.exception("Error on row %d", row_num)
+            except (ValueError, json.JSONDecodeError, KeyError) as exc:
+                logger.warning("Bad data on row %d: %s", row_num, exc)
                 errors += 1
 
         if not dry_run:

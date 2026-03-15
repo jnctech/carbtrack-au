@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
 
@@ -78,8 +79,11 @@ def batch_approve(
                     session.commit()
                     logger.info("Progress: %d/%d processed...", i + 1, len(pending))
 
-            except Exception:
-                logger.exception("Error approving staging id=%d", staging_entry.id)
+            except (ValueError, KeyError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Data error approving staging id=%d: %s",
+                    staging_entry.id, exc,
+                )
                 results["errors"] += 1
 
         if not dry_run:

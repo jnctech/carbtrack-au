@@ -78,7 +78,13 @@ def seed_foods() -> None:
         ausnut = session.exec(
             select(Source).where(Source.name == "AUSNUT 2011-13")
         ).first()
-        default_source_id = ausnut.id if ausnut else None
+        if not ausnut:
+            logger.warning(
+                "AUSNUT 2011-13 source not found — cannot seed foods. "
+                "Ensure seed_sources() runs first."
+            )
+            return
+        default_source_id = ausnut.id
 
         foods_data = json.loads(SEED_FOODS_FILE.read_text(encoding="utf-8"))
         now = _utcnow()

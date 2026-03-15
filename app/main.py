@@ -3,9 +3,11 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
 from app.routers import foods, queries, sources, staging
@@ -36,6 +38,9 @@ app.include_router(sources.router)
 app.include_router(foods.router)
 app.include_router(staging.router)
 app.include_router(queries.router)
+
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 @app.get("/health")

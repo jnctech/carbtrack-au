@@ -107,11 +107,69 @@ def seed_foods() -> None:
         logger.info("Seeded %d foods from %s", len(foods_data), SEED_FOODS_FILE.name)
 
 
+def top_up_seed_foods() -> None:
+    """Insert any seed entries missing from a non-empty foods table.
+
+    Idempotent: matches existing rows by (name, brand, barcode) including
+    soft-deleted (active=false) rows so admins can permanently retire an
+    item by deactivating without it reappearing on restart. Skips entirely
+    when the table is empty (seed_foods() handles initial population).
+    """
+    with Session(engine) as session:
+        if session.exec(select(Food).limit(1)).first() is None:
+            return  # fresh DB — seed_foods() owns this case
+
+        if not SEED_FOODS_FILE.exists():
+            return
+
+        ausnut = session.exec(
+            select(Source).where(Source.name == "AUSNUT 2011-13")
+        ).first()
+        if ausnut is None:
+            return
+
+        foods_data = json.loads(SEED_FOODS_FILE.read_text(encoding="utf-8"))
+        now = _utcnow()
+        added = 0
+        for entry in foods_data:
+            statement = select(Food).where(Food.name == entry["name"])
+            statement = statement.where(
+                Food.brand == entry["brand"]
+                if entry.get("brand") is not None
+                else Food.brand.is_(None)  # type: ignore[union-attr]
+            )
+            statement = statement.where(
+                Food.barcode == entry["barcode"]
+                if entry.get("barcode") is not None
+                else Food.barcode.is_(None)  # type: ignore[union-attr]
+            )
+            if session.exec(statement.limit(1)).first() is not None:
+                continue
+
+            food = Food(**entry, source_id=ausnut.id)
+            session.add(food)
+            session.flush()
+            session.add(
+                FoodSourceRef(
+                    food_id=food.id,
+                    source_id=ausnut.id,
+                    reported_carbs=entry["carbs_per_100g"],
+                    queried_at=now,
+                )
+            )
+            added += 1
+
+        if added:
+            session.commit()
+            logger.info("Top-up added %d new generic foods from %s", added, SEED_FOODS_FILE.name)
+
+
 def init_db() -> None:
-    """Create tables and seed on first run."""
+    """Create tables and seed on first run; top-up new generic foods on later runs."""
     create_db_and_tables()
     seed_sources()
     seed_foods()
+    top_up_seed_foods()
 
 
 def get_session():

@@ -217,12 +217,7 @@
   function initScanner() {
     scanner = new Html5Qrcode("reader");
     scanner.start(
-      {
-        facingMode: "environment",
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        focusMode: "continuous"
-      },
+      { facingMode: "environment" },
       {
         fps: 10,
         qrbox: function (viewfinderWidth, viewfinderHeight) {
@@ -234,7 +229,13 @@
           Html5QrcodeSupportedFormats.EAN_8,
           Html5QrcodeSupportedFormats.UPC_A,
         ],
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+        videoConstraints: {
+          facingMode: "environment",
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }]
+        }
       },
       onScanSuccess,
       function () { /* ignore scan failure noise */ }

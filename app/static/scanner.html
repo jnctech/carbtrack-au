@@ -263,7 +263,13 @@
       console.warn("Could not query camera capabilities:", err);
       return;
     }
-    if (!caps || !caps.torch) return;
+    // Show button if the camera reports any torch info — explicit `false` is the
+    // only definitive "not supported". Some Chromium builds expose torch as
+    // [true, false] (Image Capture draft); a plain truthy check would still
+    // pass that, but `=== undefined` is the most permissive correct check.
+    // If the hardware actually rejects, applyVideoConstraints catches and
+    // surfaces "Torch unavailable on this device".
+    if (!caps || caps.torch === undefined || caps.torch === false) return;
 
     var torchRow = document.getElementById("torch-row");
     var torchBtn = document.getElementById("torch-btn");

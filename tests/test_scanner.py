@@ -58,6 +58,34 @@ def test_static_404_for_missing_file(client):
     assert resp.status_code == 404
 
 
+def test_scanner_served_with_native_detector_flag(client):
+    """Phase 5A.1: served HTML includes the html5-qrcode flag that opts into the
+    browser's native BarcodeDetector when present. Smoke-only — actual delegation
+    to ML Kit happens in the browser and isn't exercised here."""
+    resp = client.get("/static/scanner.html")
+    assert "useBarCodeDetectorIfSupported" in resp.text
+
+
+def test_scanner_served_with_pinned_video_constraints(client):
+    """Phase 5A.1: served HTML includes the 1920×1080 + continuous-AF hints.
+    Smoke-only — browser may ignore the hints; this just guards against
+    accidental regressions to facingMode-only config."""
+    resp = client.get("/static/scanner.html")
+    assert 'width: { ideal: 1920 }' in resp.text
+    assert 'focusMode: "continuous"' in resp.text
+
+
+def test_scanner_served_with_torch_button(client):
+    """Phase 5A.1: served HTML contains the torch DOM elements and the
+    applyVideoConstraints call that toggles the hardware torch. CSS keeps
+    the row hidden until JS confirms the camera reports the capability."""
+    resp = client.get("/static/scanner.html")
+    assert 'id="torch-btn"' in resp.text
+    assert 'id="torch-row"' in resp.text
+    assert "applyVideoConstraints" in resp.text
+    assert "torch" in resp.text
+
+
 # --- Barcode lookup integration (scanner → API) ---
 
 

@@ -246,3 +246,53 @@ def map_staging(
     return staging
 
 
+class SetMappedData(BaseModel):
+    mapped_data: str
+
+    @field_validator("mapped_data")
+    @classmethod
+    def mapped_data_must_be_valid_json(cls, v: str) -> str:
+        if len(v) > 1_000_000:
+            raise ValueError("mapped_data exceeds 1 MB maximum size")
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"mapped_data must be valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("mapped_data must be a JSON object")
+        if not isinstance(parsed.get("name"), str) or not parsed["name"].strip():
+            raise ValueError("mapped_data must contain a non-empty 'name' string")
+        carbs = parsed.get("carbs_per_100g")
+        if carbs is None:
+            raise ValueError("mapped_data must contain 'carbs_per_100g'")
+        if not isinstance(carbs, (int, float)) or isinstance(carbs, bool):
+            raise ValueError("carbs_per_100g must be a number")
+        if carbs < 0:
+            raise ValueError("carbs_per_100g cannot be negative")
+        return v
+
+
+@router.post("/{staging_id}/set-mapped", response_model=StagingResponse)
+def set_mapped_data(
+    staging_id: int,
+    body: SetMappedData,
+    session: Session = Depends(get_session),
+):
+    """Set mapped_data directly — bypasses Sonnet for pre-mapped sources like OFF."""
+    staging = session.get(Staging, staging_id)
+    if not staging:
+        raise HTTPException(status_code=404, detail="Staging entry not found")
+
+    if staging.status not in ("pending", "conflict"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot set mapped data on entry with status '{staging.status}'",
+        )
+
+    staging.mapped_data = body.mapped_data
+    session.add(staging)
+    session.commit()
+    session.refresh(staging)
+    return staging
+
+

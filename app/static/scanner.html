@@ -103,7 +103,32 @@
     background: rgba(248, 113, 113, 0.15); color: var(--red);
   }
 
+  .source-badge {
+    display: inline-block; margin-top: 0.5rem; padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600;
+    background: rgba(56, 189, 248, 0.15); color: var(--accent);
+  }
+
   .error-msg { color: var(--red); font-size: 0.95rem; }
+  .success-msg { color: var(--green); font-size: 0.95rem; }
+
+  /* Import buttons */
+  .import-actions {
+    margin-top: 1rem; display: flex; gap: 0.5rem;
+  }
+  .import-actions button {
+    flex: 1; padding: 0.75rem; border-radius: 0.5rem; border: none;
+    font-weight: 600; font-size: 0.9rem; cursor: pointer;
+  }
+  .import-actions button:disabled {
+    opacity: 0.5; cursor: not-allowed;
+  }
+  .btn-staging {
+    background: var(--accent); color: var(--bg);
+  }
+  .btn-quick {
+    background: var(--green); color: var(--bg);
+  }
 
   /* Status bar */
   .status {
@@ -143,18 +168,35 @@
 (function () {
   "use strict";
 
-  const API_BASE = window.location.origin;
-  const readerEl = document.getElementById("reader");
-  const barcodeInput = document.getElementById("barcode-input");
-  const lookupBtn = document.getElementById("lookup-btn");
-  const servingInput = document.getElementById("serving-input");
-  const resultCard = document.getElementById("result-card");
-  const resultContent = document.getElementById("result-content");
-  const statusEl = document.getElementById("status");
+  var OFF_API = "https://world.openfoodfacts.org/api/v2/product/";
+  var API_BASE = window.location.origin;
 
-  let lastFood = null;
-  let scanner = null;
-  let lastScan = { barcode: null, ts: 0 };
+  var barcodeInput = document.getElementById("barcode-input");
+  var lookupBtn = document.getElementById("lookup-btn");
+  var servingInput = document.getElementById("serving-input");
+  var resultCard = document.getElementById("result-card");
+  var resultContent = document.getElementById("result-content");
+  var statusEl = document.getElementById("status");
+
+  var lastFood = null;
+  var scanner = null;
+  var lastScan = { barcode: null, ts: 0 };
+  var offSourceId = null;
+
+  // --- Resolve OFF source_id on load ---
+  fetch(API_BASE + "/sources")
+    .then(function (res) { return res.json(); })
+    .then(function (sources) {
+      for (var i = 0; i < sources.length; i++) {
+        if (sources[i].name === "Open Food Facts AU") {
+          offSourceId = sources[i].id;
+          break;
+        }
+      }
+    })
+    .catch(function (err) {
+      console.error("Failed to resolve OFF source_id:", err);
+    });
 
   // --- Scanner setup ---
   function initScanner() {
@@ -184,7 +226,6 @@
   }
 
   function onScanSuccess(decodedText) {
-    // Debounce: ignore repeat scans of the same barcode within 3 s
     if (lastScan.barcode === decodedText && Date.now() - lastScan.ts < 3000) {
       return;
     }
@@ -193,11 +234,12 @@
     lookupBarcode(decodedText);
   }
 
-  // --- API lookup ---
+  // --- Barcode validation ---
   function isValidBarcode(str) {
     return /^\d{8,14}$/.test(str);
   }
 
+  // --- CarbTrack lookup (then OFF fallback) ---
   function lookupBarcode(barcode) {
     barcode = barcode.trim();
     if (!barcode) return;
@@ -219,17 +261,19 @@
     })
       .then(function (res) {
         clearTimeout(timeout);
-        if (!res.ok) {
-          if (res.status === 404) throw new Error("No food found for barcode " + barcode);
-          throw new Error("API error (" + res.status + ")");
+        if (res.status === 404) {
+          // Not in CarbTrack — try OFF
+          return searchOFF(barcode);
         }
+        if (!res.ok) throw new Error("API error (" + res.status + ")");
         return res.json().catch(function () {
           throw new Error("Unexpected response from server");
         });
       })
       .then(function (food) {
+        if (!food) return; // OFF handler manages its own rendering
         lastFood = food;
-        renderFood(food);
+        renderFood(food, "carbtrack");
         statusEl.textContent = "Scan another barcode or enter one below";
       })
       .catch(function (err) {
@@ -249,8 +293,86 @@
       });
   }
 
+  // --- Open Food Facts lookup ---
+  function searchOFF(barcode) {
+    statusEl.textContent = "Not in CarbTrack \u2014 searching Open Food Facts\u2026";
+
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 8000);
+
+    return fetch(OFF_API + encodeURIComponent(barcode) + ".json", {
+      signal: controller.signal
+    })
+      .then(function (res) {
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error("Open Food Facts returned " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data.product || data.status === 0) {
+          lastFood = null;
+          resultContent.innerHTML = '<p class="error-msg">Barcode ' + escapeHtml(barcode) + ' not found in CarbTrack or Open Food Facts</p>';
+          resultCard.className = "result-card visible error";
+          statusEl.textContent = "Try another barcode";
+          return null;
+        }
+        var mapped = mapOFFProduct(data.product, barcode);
+        mapped._off_raw = data.product;
+        lastFood = mapped;
+        renderFood(mapped, "off");
+        statusEl.textContent = "Found on Open Food Facts \u2014 import to CarbTrack?";
+        return null; // renderFood handles display
+      })
+      .catch(function (err) {
+        clearTimeout(timeout);
+        console.error("OFF lookup error for barcode", barcode, ":", err);
+        lastFood = null;
+        var msg = (err && err.name === "AbortError")
+          ? "Open Food Facts request timed out"
+          : (err && err.message) ? err.message : "Open Food Facts lookup failed";
+        resultContent.innerHTML = '<p class="error-msg">Barcode ' + escapeHtml(barcode) + ' not in CarbTrack. ' + escapeHtml(msg) + '</p>';
+        resultCard.className = "result-card visible error";
+        statusEl.textContent = "Try another barcode";
+        return null;
+      });
+  }
+
+  // --- Map OFF product to CarbTrack schema ---
+  function safeFloat(val) {
+    if (val == null || val === "") return null;
+    var n = parseFloat(val);
+    return isFinite(n) ? n : null;
+  }
+
+  function mapOFFProduct(product, barcode) {
+    var n = product.nutriments || {};
+    return {
+      barcode: barcode,
+      name: product.product_name || product.product_name_en || "Unknown",
+      brand: product.brands || null,
+      category: (product.categories_tags && product.categories_tags.length > 0)
+        ? product.categories_tags[product.categories_tags.length - 1].replace("en:", "").replace(/-/g, " ")
+        : null,
+      carbs_per_100g: safeFloat(n.carbohydrates_100g),
+      sugars_per_100g: safeFloat(n.sugars_100g),
+      fibre_per_100g: safeFloat(n.fiber_100g),
+      energy_kj: safeFloat(n["energy-kj_100g"]),
+      protein_per_100g: safeFloat(n.proteins_100g),
+      fat_per_100g: safeFloat(n.fat_100g),
+      sodium_mg: n.sodium_100g != null ? safeFloat(n.sodium_100g) * 1000 : null,
+      serving_size_g: parseServingSize(product.serving_size),
+      source_confidence: 0.7
+    };
+  }
+
+  function parseServingSize(str) {
+    if (!str) return null;
+    var match = str.match(/(\d+\.?\d*)\s*g/i);
+    return match ? parseFloat(match[1]) : null;
+  }
+
   // --- Rendering ---
-  function renderFood(food) {
+  function renderFood(food, source) {
     if (food.carbs_per_100g == null || !isFinite(food.carbs_per_100g)) {
       resultContent.innerHTML = '<p class="error-msg">Carb data missing for this food. Do not use for dosing.</p>';
       resultCard.className = "result-card visible error";
@@ -264,6 +386,10 @@
 
     if (food.conflict_flag) {
       html += '<span class="conflict-badge">Data conflict</span>';
+    }
+
+    if (source === "off") {
+      html += '<span class="source-badge">Open Food Facts</span>';
     }
 
     html += '<div class="carb-hero">';
@@ -295,6 +421,14 @@
       html += "</div>";
     }
 
+    // Import buttons for OFF results
+    if (source === "off") {
+      html += '<div class="import-actions">';
+      html += '<button class="btn-staging" id="btn-staging">Add to staging</button>';
+      html += '<button class="btn-quick" id="btn-quick">Quick add</button>';
+      html += "</div>";
+    }
+
     resultContent.innerHTML = html;
     resultCard.className = "result-card visible";
 
@@ -303,6 +437,119 @@
       servingInput.value = Math.round(food.serving_size_g);
     }
     updateServingCarbs();
+
+    // Bind import buttons
+    if (source === "off") {
+      var btnStaging = document.getElementById("btn-staging");
+      var btnQuick = document.getElementById("btn-quick");
+      if (btnStaging) btnStaging.addEventListener("click", function () { importToStaging(food); });
+      if (btnQuick) btnQuick.addEventListener("click", function () { importQuickAdd(food); });
+    }
+  }
+
+  // --- Import: staging (with conflict detection) ---
+  function importToStaging(food) {
+    if (!offSourceId) {
+      statusEl.textContent = "Cannot import \u2014 Open Food Facts source not found in CarbTrack";
+      return;
+    }
+    var btn = document.getElementById("btn-staging");
+    if (btn) { btn.disabled = true; btn.textContent = "Submitting\u2026"; }
+
+    // Build mapped_data (what the staging pipeline expects after field mapping)
+    var mapped = buildMappedData(food);
+
+    // Submit raw OFF data to staging, then immediately set mapped_data
+    var body = {
+      source_id: offSourceId,
+      raw_data: JSON.stringify(food._off_raw || {})
+    };
+
+    fetch(API_BASE + "/staging", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+      .then(function (res) {
+        if (!res.ok) return res.json().then(function (e) { throw new Error(e.detail || "Staging submit failed"); });
+        return res.json();
+      })
+      .then(function (staging) {
+        // Set mapped_data so it can be approved
+        return fetch(API_BASE + "/staging/" + staging.id + "/set-mapped", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mapped_data: JSON.stringify(mapped) })
+        }).then(function (res) {
+          if (!res.ok) return res.json().then(function (e) { throw new Error(e.detail || "Set mapped data failed"); });
+        });
+      })
+      .then(function () {
+        if (btn) { btn.textContent = "Added"; }
+        resultContent.insertAdjacentHTML("beforeend", '<p class="success-msg" style="margin-top:0.75rem">Submitted to staging \u2014 ready for approval</p>');
+        statusEl.textContent = "Added to staging \u2014 ready for approval";
+      })
+      .catch(function (err) {
+        if (btn) { btn.disabled = false; btn.textContent = "Add to staging"; }
+        statusEl.textContent = "Import failed: " + err.message;
+      });
+  }
+
+  // --- Import: quick add (direct to foods) ---
+  function importQuickAdd(food) {
+    if (!offSourceId) {
+      statusEl.textContent = "Cannot import \u2014 Open Food Facts source not found in CarbTrack";
+      return;
+    }
+    var btn = document.getElementById("btn-quick");
+    if (btn) { btn.disabled = true; btn.textContent = "Adding\u2026"; }
+
+    var body = buildMappedData(food);
+    body.source_id = offSourceId;
+    body.source_confidence = food.source_confidence || 0.7;
+
+    fetch(API_BASE + "/foods", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+      .then(function (res) {
+        if (res.status === 409) throw new Error("A food with this barcode already exists");
+        if (!res.ok) return res.json().then(function (e) { throw new Error(e.detail || "Quick add failed"); });
+        return res.json();
+      })
+      .then(function (created) {
+        lastFood = created;
+        if (btn) { btn.textContent = "Added"; }
+        // Disable both buttons after successful quick add
+        var btnStaging = document.getElementById("btn-staging");
+        if (btnStaging) btnStaging.disabled = true;
+        resultContent.insertAdjacentHTML("beforeend", '<p class="success-msg" style="margin-top:0.75rem">Added to CarbTrack (ID ' + created.id + ')</p>');
+        statusEl.textContent = "Food added \u2014 scan another barcode";
+      })
+      .catch(function (err) {
+        if (btn) { btn.disabled = false; btn.textContent = "Quick add"; }
+        statusEl.textContent = "Import failed: " + err.message;
+      });
+  }
+
+  // --- Build mapped data for CarbTrack schema ---
+  function buildMappedData(food) {
+    var mapped = {
+      name: food.name,
+      carbs_per_100g: food.carbs_per_100g
+    };
+    if (food.barcode) mapped.barcode = food.barcode;
+    if (food.brand) mapped.brand = food.brand;
+    if (food.category) mapped.category = food.category;
+    if (food.sugars_per_100g != null) mapped.sugars_per_100g = food.sugars_per_100g;
+    if (food.fibre_per_100g != null) mapped.fibre_per_100g = food.fibre_per_100g;
+    if (food.energy_kj != null) mapped.energy_kj = food.energy_kj;
+    if (food.protein_per_100g != null) mapped.protein_per_100g = food.protein_per_100g;
+    if (food.fat_per_100g != null) mapped.fat_per_100g = food.fat_per_100g;
+    if (food.sodium_mg != null) mapped.sodium_mg = food.sodium_mg;
+    if (food.serving_size_g != null) mapped.serving_size_g = food.serving_size_g;
+    return mapped;
   }
 
   function updateServingCarbs() {

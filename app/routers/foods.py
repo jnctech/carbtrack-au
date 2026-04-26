@@ -1,11 +1,12 @@
 """Foods router — CRUD, search, barcode lookup, soft delete."""
 
 import json
+import re
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydField
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -15,7 +16,10 @@ from app.services.off_client import (
     OFF_SOURCE_NAME,
     fetch_off_product,
     map_off_to_carbtrack,
+    submit_off_product,
 )
+
+_BARCODE_RE = re.compile(r"^\d{8,14}$")
 
 router = APIRouter(prefix="/foods", tags=["foods"])
 
@@ -167,6 +171,68 @@ def get_food_by_barcode(barcode: str, session: Session = Depends(get_session)):
 
     staging_id = _stage_off_lookup(barcode, off_payload, mapped, session)
     return _provisional_response(mapped, staging_id)
+
+
+class FoodContribute(BaseModel):
+    barcode: str = PydField(min_length=8, max_length=14)
+    name: str = PydField(min_length=1, max_length=200)
+    brand: Optional[str] = PydField(default=None, max_length=120)
+    category: Optional[str] = PydField(default=None, max_length=120)
+    carbs_per_100g: float = PydField(ge=0, le=100)
+    sugars_per_100g: Optional[float] = PydField(default=None, ge=0, le=100)
+    fibre_per_100g: Optional[float] = PydField(default=None, ge=0, le=100)
+    energy_kj: Optional[float] = PydField(default=None, ge=0, le=4000)
+    protein_per_100g: Optional[float] = PydField(default=None, ge=0, le=100)
+    fat_per_100g: Optional[float] = PydField(default=None, ge=0, le=100)
+    sodium_mg: Optional[float] = PydField(default=None, ge=0, le=10000)
+    serving_size_g: Optional[float] = PydField(default=None, gt=0, le=2000)
+
+
+@router.post("/contribute", status_code=202)
+def contribute_food(
+    payload: FoodContribute, session: Session = Depends(get_session)
+):
+    """Submit a user-supplied product. Always creates a pending staging row;
+    best-effort writes back to Open Food Facts when OFF_CONTRIBUTE_ENABLED.
+
+    Never auto-promotes to the foods table — admin review via the staging
+    pipeline is mandatory. The local barcode endpoint will keep falling
+    back to OFF for this barcode until either OFF accepts the contribution
+    or admin approves the staging row.
+    """
+    if not _BARCODE_RE.fullmatch(payload.barcode):
+        raise HTTPException(status_code=422, detail="Barcode must be 8–14 digits")
+
+    mapped = payload.model_dump()
+    raw = {"source": "user_contribution", "submitted": mapped}
+
+    source = session.exec(
+        select(Source).where(Source.name == OFF_SOURCE_NAME)
+    ).first()
+    if source is None or source.id is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Open Food Facts source not seeded — cannot accept contributions",
+        )
+
+    staging = Staging(
+        source_id=source.id,
+        raw_data=json.dumps(raw),
+        mapped_data=json.dumps(mapped),
+        status="pending",
+    )
+    session.add(staging)
+    session.commit()
+    session.refresh(staging)
+
+    off_ok, off_reason = submit_off_product(payload.barcode, mapped)
+
+    return {
+        "staging_id": staging.id,
+        "status": "pending_review",
+        "off_submitted": off_ok,
+        "off_reason": off_reason,
+    }
 
 
 @router.get("/{food_id}")

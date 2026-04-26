@@ -48,6 +48,26 @@ def test_scanner_page_contains_api_fetch(client):
     assert "/foods/barcode/" in resp.text
 
 
+def test_scanner_page_contains_basket_ui(client):
+    resp = client.get("/static/scanner.html")
+    assert 'id="basket-list"' in resp.text
+    assert 'id="basket-totals"' in resp.text
+    assert 'id="clear-btn"' in resp.text
+
+
+def test_scanner_page_contains_contribute_form(client):
+    resp = client.get("/static/scanner.html")
+    assert 'id="contribute-form"' in resp.text
+    assert "/foods/contribute" in resp.text
+    assert 'name="carbs_per_100g"' in resp.text
+
+
+def test_scanner_page_persists_basket_in_localstorage(client):
+    resp = client.get("/static/scanner.html")
+    assert "carbtrack.basket.v1" in resp.text
+    assert "localStorage" in resp.text
+
+
 def test_static_404_for_missing_file(client):
     resp = client.get("/static/nonexistent.html")
     assert resp.status_code == 404

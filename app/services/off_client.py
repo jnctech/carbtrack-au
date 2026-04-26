@@ -15,8 +15,11 @@ logger = logging.getLogger(__name__)
 OFF_SOURCE_NAME = "Open Food Facts AU"
 
 DEFAULT_API_BASE = "https://world.openfoodfacts.org/api/v2"
+DEFAULT_WRITE_BASE = "https://world.openfoodfacts.org/cgi"
 DEFAULT_USER_AGENT = "CarbTrackAU/0.1 (https://github.com/jnctech/carbtrack-au)"
 DEFAULT_TIMEOUT = 5.0
+DEFAULT_APP_NAME = "CarbTrackAU"
+DEFAULT_APP_VERSION = "0.1"
 
 
 def _config() -> tuple[str, str, float, bool]:
@@ -25,6 +28,19 @@ def _config() -> tuple[str, str, float, bool]:
     timeout = float(os.getenv("OFF_TIMEOUT", DEFAULT_TIMEOUT))
     enabled = os.getenv("OFF_FALLBACK_ENABLED", "true").lower() == "true"
     return api_base, user_agent, timeout, enabled
+
+
+def _write_config() -> dict:
+    return {
+        "write_base": os.getenv("OFF_WRITE_BASE", DEFAULT_WRITE_BASE).rstrip("/"),
+        "user_agent": os.getenv("OFF_USER_AGENT", DEFAULT_USER_AGENT),
+        "timeout": float(os.getenv("OFF_TIMEOUT", DEFAULT_TIMEOUT)),
+        "enabled": os.getenv("OFF_CONTRIBUTE_ENABLED", "false").lower() == "true",
+        "app_name": os.getenv("OFF_APP_NAME", DEFAULT_APP_NAME),
+        "app_version": os.getenv("OFF_APP_VERSION", DEFAULT_APP_VERSION),
+        "username": os.getenv("OFF_USERNAME"),
+        "password": os.getenv("OFF_PASSWORD"),
+    }
 
 
 def fetch_off_product(barcode: str, *, client: httpx.Client | None = None) -> dict | None:
@@ -146,3 +162,96 @@ def map_off_to_carbtrack(off_payload: dict, barcode: str) -> dict | None:
         "gi_rating": None,
         "serving_size_g": _serving_size_g(product),
     }
+
+
+# --- Outbound contribution to OFF (community write-back) ---
+
+# CarbTrack stores nutrition per 100g and energy in kJ. OFF accepts the same
+# shape via nutriment_<key>_value + nutriment_<key>_unit. Map: CarbTrack key →
+# (OFF nutriment key, OFF unit, scale factor applied to the CarbTrack value).
+# Sodium scales 1/1000 because we store mg and OFF expects g.
+_NUTRIMENT_MAP: tuple[tuple[str, str, str, float], ...] = (
+    ("carbs_per_100g", "carbohydrates", "g", 1.0),
+    ("sugars_per_100g", "sugars", "g", 1.0),
+    ("fibre_per_100g", "fiber", "g", 1.0),
+    ("protein_per_100g", "proteins", "g", 1.0),
+    ("fat_per_100g", "fat", "g", 1.0),
+    ("energy_kj", "energy-kj", "kJ", 1.0),
+    ("sodium_mg", "sodium", "g", 0.001),
+)
+
+
+def _build_off_form(barcode: str, mapped: dict, cfg: dict) -> dict:
+    """Build the application/x-www-form-urlencoded body for OFF's write API."""
+    form = {
+        "code": barcode,
+        "app_name": cfg["app_name"],
+        "app_version": cfg["app_version"],
+        "lc": "en",
+        "lang": "en",
+    }
+    if cfg["username"] and cfg["password"]:
+        form["user_id"] = cfg["username"]
+        form["password"] = cfg["password"]
+
+    if mapped.get("name"):
+        form["product_name"] = mapped["name"]
+    if mapped.get("brand"):
+        form["brands"] = mapped["brand"]
+    if mapped.get("category"):
+        form["categories"] = mapped["category"]
+    if mapped.get("serving_size_g") is not None:
+        form["serving_size"] = f"{mapped['serving_size_g']}g"
+
+    for src_key, off_key, unit, scale in _NUTRIMENT_MAP:
+        value = mapped.get(src_key)
+        if value is None:
+            continue
+        form[f"nutriment_{off_key}"] = str(round(value * scale, 6))
+        form[f"nutriment_{off_key}_unit"] = unit
+
+    return form
+
+
+def submit_off_product(
+    barcode: str, mapped: dict, *, client: httpx.Client | None = None
+) -> tuple[bool, str | None]:
+    """Submit a product contribution to Open Food Facts.
+
+    Returns (ok, reason_when_skipped). Best-effort: any failure (disabled,
+    network, non-200, or OFF status != 1) returns False with a short reason
+    so the caller can surface it but never block local staging.
+    Credentials and request bodies are never logged in full.
+    """
+    cfg = _write_config()
+    if not cfg["enabled"]:
+        return False, "off_contribute_disabled"
+
+    url = f"{cfg['write_base']}/product_jqm2.php"
+    headers = {"User-Agent": cfg["user_agent"], "Accept": "application/json"}
+    form = _build_off_form(barcode, mapped, cfg)
+
+    try:
+        if client is None:
+            with httpx.Client(timeout=cfg["timeout"], headers=headers) as ctx_client:
+                response = ctx_client.post(url, data=form)
+        else:
+            response = client.post(url, data=form, headers=headers, timeout=cfg["timeout"])
+    except httpx.HTTPError as exc:
+        logger.warning("OFF contribution network error: %s", type(exc).__name__)
+        return False, "off_contribute_network_error"
+
+    if response.status_code != 200:
+        logger.info("OFF contribution non-200: status=%d", response.status_code)
+        return False, f"off_contribute_http_{response.status_code}"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return False, "off_contribute_non_json"
+
+    if payload.get("status") == 1:
+        logger.info("OFF contribution accepted for barcode (length=%d)", len(barcode))
+        return True, None
+
+    return False, "off_contribute_rejected"

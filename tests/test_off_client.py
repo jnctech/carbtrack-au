@@ -225,3 +225,155 @@ def test_payload_round_trips_through_json():
     payload = _peanut_butter_payload()
     serialised = json.dumps(payload)
     assert json.loads(serialised) == payload
+
+
+# --- submit_off_product (write-back to OFF) ---
+
+
+def _user_contribution() -> dict:
+    return {
+        "barcode": PEANUT_BUTTER_BARCODE,
+        "name": "Smooth Peanut Butter",
+        "brand": "Mega Value",
+        "category": "Spreads",
+        "carbs_per_100g": 12.5,
+        "sugars_per_100g": 6.0,
+        "fibre_per_100g": 6.5,
+        "energy_kj": 2510,
+        "protein_per_100g": 27.0,
+        "fat_per_100g": 49.0,
+        "sodium_mg": 400.0,
+        "serving_size_g": 20.0,
+    }
+
+
+def test_submit_off_product_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("OFF_CONTRIBUTE_ENABLED", raising=False)
+    ok, reason = off_client.submit_off_product(
+        PEANUT_BUTTER_BARCODE, _user_contribution()
+    )
+    assert ok is False
+    assert reason == "off_contribute_disabled"
+
+
+def test_submit_off_product_success(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json={"status": 1, "status_verbose": "ok"})
+
+    with _make_client(handler) as client:
+        ok, reason = off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+
+    assert ok is True
+    assert reason is None
+    assert "product_jqm2.php" in captured["url"]
+    body = captured["body"]
+    assert f"code={PEANUT_BUTTER_BARCODE}" in body
+    assert "product_name=Smooth+Peanut+Butter" in body
+    assert "nutriment_carbohydrates=12.5" in body
+    # sodium scales mg → g for OFF
+    assert "nutriment_sodium=0.4" in body
+    assert "nutriment_sodium_unit=g" in body
+    # energy stored as kJ on both sides
+    assert "nutriment_energy-kj=2510" in body
+
+
+def test_submit_off_product_omits_credentials_when_unset(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+    monkeypatch.delenv("OFF_USERNAME", raising=False)
+    monkeypatch.delenv("OFF_PASSWORD", raising=False)
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json={"status": 1})
+
+    with _make_client(handler) as client:
+        off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+
+    assert "user_id" not in captured["body"]
+    assert "password" not in captured["body"]
+    assert "app_name=CarbTrackAU" in captured["body"]
+
+
+def test_submit_off_product_includes_credentials_when_set(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+    monkeypatch.setenv("OFF_USERNAME", "ctuser")
+    monkeypatch.setenv("OFF_PASSWORD", "secret")
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json={"status": 1})
+
+    with _make_client(handler) as client:
+        off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+
+    assert "user_id=ctuser" in captured["body"]
+    assert "password=secret" in captured["body"]
+
+
+def test_submit_off_product_rejected_returns_reason(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "error": "validation"})
+
+    with _make_client(handler) as client:
+        ok, reason = off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+    assert ok is False
+    assert reason == "off_contribute_rejected"
+
+
+def test_submit_off_product_network_error(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated")
+
+    with _make_client(handler) as client:
+        ok, reason = off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+    assert ok is False
+    assert reason == "off_contribute_network_error"
+
+
+def test_submit_off_product_non_200_status(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    with _make_client(handler) as client:
+        ok, reason = off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+    assert ok is False
+    assert reason == "off_contribute_http_500"
+
+
+def test_submit_off_product_non_json_response(monkeypatch):
+    monkeypatch.setenv("OFF_CONTRIBUTE_ENABLED", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>fail</html>")
+
+    with _make_client(handler) as client:
+        ok, reason = off_client.submit_off_product(
+            PEANUT_BUTTER_BARCODE, _user_contribution(), client=client
+        )
+    assert ok is False
+    assert reason == "off_contribute_non_json"

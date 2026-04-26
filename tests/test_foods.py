@@ -1,8 +1,12 @@
 """Tests for the foods router."""
 
-from sqlmodel import Session
+import json
 
-from app.models import Food, Source
+from sqlmodel import Session, select
+
+from app.models import Food, Source, Staging
+from app.routers import foods as foods_router
+from app.services.off_client import OFF_SOURCE_NAME
 
 
 def _create_source(session: Session) -> Source:
@@ -168,3 +172,111 @@ def test_pagination(client, session):
 
     response = client.get("/foods", params={"limit": 2, "offset": 4})
     assert len(response.json()) == 1
+
+
+# --- POST /foods/contribute ---
+
+
+def _seed_off_source(session):
+    source = Source(name=OFF_SOURCE_NAME, tier=1)
+    session.add(source)
+    session.commit()
+    session.refresh(source)
+    return source
+
+
+def _valid_contribution() -> dict:
+    return {
+        "barcode": "9310885116072",
+        "name": "Smooth Peanut Butter",
+        "brand": "Mega Value",
+        "category": "Spreads",
+        "carbs_per_100g": 12.5,
+        "sugars_per_100g": 6.0,
+        "fibre_per_100g": 6.5,
+        "energy_kj": 2510,
+        "protein_per_100g": 27.0,
+        "fat_per_100g": 49.0,
+        "sodium_mg": 400.0,
+        "serving_size_g": 20.0,
+    }
+
+
+def test_contribute_creates_pending_staging(client, session, monkeypatch):
+    _seed_off_source(session)
+    monkeypatch.setattr(
+        foods_router, "submit_off_product", lambda barcode, mapped: (False, "off_contribute_disabled")
+    )
+
+    resp = client.post("/foods/contribute", json=_valid_contribution())
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "pending_review"
+    assert body["off_submitted"] is False
+    assert body["off_reason"] == "off_contribute_disabled"
+    assert body["staging_id"] is not None
+
+    staged = session.exec(select(Staging)).all()
+    assert len(staged) == 1
+    assert staged[0].status == "pending"
+    mapping = json.loads(staged[0].mapped_data)
+    assert mapping["barcode"] == "9310885116072"
+    assert mapping["carbs_per_100g"] == 12.5
+
+
+def test_contribute_does_not_promote_to_foods(client, session, monkeypatch):
+    """User contributions must go through staging review, never auto-promote."""
+    _seed_off_source(session)
+    monkeypatch.setattr(
+        foods_router, "submit_off_product", lambda barcode, mapped: (True, None)
+    )
+
+    client.post("/foods/contribute", json=_valid_contribution())
+
+    foods = session.exec(select(Food)).all()
+    assert foods == []
+
+
+def test_contribute_reports_off_acceptance(client, session, monkeypatch):
+    _seed_off_source(session)
+    monkeypatch.setattr(
+        foods_router, "submit_off_product", lambda barcode, mapped: (True, None)
+    )
+
+    resp = client.post("/foods/contribute", json=_valid_contribution())
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["off_submitted"] is True
+    assert body["off_reason"] is None
+
+
+def test_contribute_rejects_invalid_barcode(client, session):
+    _seed_off_source(session)
+    bad = _valid_contribution()
+    bad["barcode"] = "abcd1234"
+    resp = client.post("/foods/contribute", json=bad)
+    assert resp.status_code == 422
+
+
+def test_contribute_rejects_negative_carbs(client, session):
+    _seed_off_source(session)
+    bad = _valid_contribution()
+    bad["carbs_per_100g"] = -5
+    resp = client.post("/foods/contribute", json=bad)
+    assert resp.status_code == 422
+
+
+def test_contribute_rejects_implausible_carbs(client, session):
+    _seed_off_source(session)
+    bad = _valid_contribution()
+    bad["carbs_per_100g"] = 250  # >100g per 100g is impossible
+    resp = client.post("/foods/contribute", json=bad)
+    assert resp.status_code == 422
+
+
+def test_contribute_returns_503_when_off_source_missing(client, monkeypatch):
+    monkeypatch.setattr(
+        foods_router, "submit_off_product", lambda barcode, mapped: (False, None)
+    )
+    resp = client.post("/foods/contribute", json=_valid_contribution())
+    assert resp.status_code == 503

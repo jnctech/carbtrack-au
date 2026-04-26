@@ -264,13 +264,15 @@
       console.warn("Could not query camera capabilities:", err);
       return;
     }
-    // Show button if the camera reports any torch info — explicit `false` is the
-    // only definitive "not supported". Some Chromium builds expose torch as
-    // [true, false] (Image Capture draft); a plain truthy check would still
-    // pass that, but `=== undefined` is the most permissive correct check.
-    // If the hardware actually rejects, applyVideoConstraints catches and
-    // surfaces "Torch unavailable on this device".
-    if (!caps || caps.torch === undefined || caps.torch === false) return;
+    // Log what the camera actually reports, so device-specific quirks are visible.
+    console.info("Camera capabilities:", caps);
+
+    // Show the button whenever the `torch` key is present at all. Chrome Android
+    // sometimes reports `torch: false` initially even on devices where torch
+    // works fine — only treat key-absent as a hard "not supported". If the
+    // hardware really rejects, applyVideoConstraints catches and surfaces
+    // "Torch unavailable on this device".
+    if (!caps || caps.torch === undefined) return;
 
     var torchRow = document.getElementById("torch-row");
     var torchBtn = document.getElementById("torch-btn");

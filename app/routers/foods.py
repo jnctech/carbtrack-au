@@ -1,5 +1,6 @@
 """Foods router — CRUD, search, barcode lookup, soft delete."""
 
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -9,7 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import Food, _utcnow
+from app.models import Food, Source, Staging, _utcnow
+from app.services.off_client import (
+    OFF_SOURCE_NAME,
+    fetch_off_product,
+    map_off_to_carbtrack,
+)
 
 router = APIRouter(prefix="/foods", tags=["foods"])
 
@@ -80,14 +86,87 @@ def list_foods(
     return session.exec(statement).all()
 
 
+def _stage_off_lookup(
+    barcode: str, off_payload: dict, mapped: dict, session: Session
+) -> Optional[int]:
+    """Persist a pending staging row for the OFF lookup so it enters the
+    standard review/conflict pipeline. Returns the staging id, or None if
+    the OFF source isn't configured (fallback still serves the response).
+    """
+    source = session.exec(
+        select(Source).where(Source.name == OFF_SOURCE_NAME)
+    ).first()
+    if source is None or source.id is None:
+        return None
+
+    existing = session.exec(
+        select(Staging).where(
+            Staging.source_id == source.id, Staging.status == "pending"
+        )
+    ).all()
+    for row in existing:
+        if row.mapped_data and f'"barcode": "{barcode}"' in row.mapped_data:
+            return row.id
+
+    staging = Staging(
+        source_id=source.id,
+        raw_data=json.dumps(off_payload),
+        mapped_data=json.dumps(mapped),
+        status="pending",
+    )
+    session.add(staging)
+    session.commit()
+    session.refresh(staging)
+    return staging.id
+
+
+def _provisional_response(mapped: dict, staging_id: Optional[int]) -> dict:
+    """Shape the OFF-derived response to match the Food schema the scanner
+    UI consumes, plus a `provisional` marker so callers can distinguish it
+    from a verified Food row."""
+    return {
+        "id": None,
+        "barcode": mapped["barcode"],
+        "name": mapped["name"],
+        "brand": mapped.get("brand"),
+        "category": mapped.get("category"),
+        "source_id": None,
+        "source_confidence": 0.7,
+        "carbs_per_100g": mapped["carbs_per_100g"],
+        "sugars_per_100g": mapped.get("sugars_per_100g"),
+        "fibre_per_100g": mapped.get("fibre_per_100g"),
+        "energy_kj": mapped.get("energy_kj"),
+        "protein_per_100g": mapped.get("protein_per_100g"),
+        "fat_per_100g": mapped.get("fat_per_100g"),
+        "sodium_mg": mapped.get("sodium_mg"),
+        "gi_rating": mapped.get("gi_rating"),
+        "serving_size_g": mapped.get("serving_size_g"),
+        "conflict_flag": False,
+        "active": True,
+        "provisional": True,
+        "source": OFF_SOURCE_NAME,
+        "staging_id": staging_id,
+    }
+
+
 @router.get("/barcode/{barcode}")
 def get_food_by_barcode(barcode: str, session: Session = Depends(get_session)):
     food = session.exec(
         select(Food).where(Food.barcode == barcode, Food.active == True)  # noqa: E712
     ).first()
-    if not food:
+    if food:
+        return food
+
+    off_payload = fetch_off_product(barcode)
+    if off_payload is None:
         raise HTTPException(status_code=404, detail="Food not found")
-    return food
+
+    mapped = map_off_to_carbtrack(off_payload, barcode)
+    if mapped is None:
+        raise HTTPException(status_code=404, detail="Food not found")
+
+    staging_id = _stage_off_lookup(barcode, off_payload, mapped, session)
+    return _provisional_response(mapped, staging_id)
 
 
 @router.get("/{food_id}")

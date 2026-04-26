@@ -134,6 +134,17 @@
   .status {
     text-align: center; padding: 0.5rem; font-size: 0.8rem; color: var(--muted);
   }
+
+  /* Torch toggle */
+  .torch-row {
+    display: none; justify-content: center; margin-top: 0.5rem;
+  }
+  .torch-row.visible { display: flex; }
+  .torch-btn {
+    padding: 0.5rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 0.9rem; cursor: pointer;
+  }
+  .torch-btn.on { background: var(--amber); color: var(--bg); border-color: var(--amber); }
 </style>
 </head>
 <body>
@@ -144,6 +155,10 @@
 
 <main>
   <div id="reader"></div>
+
+  <div class="torch-row" id="torch-row">
+    <button type="button" class="torch-btn" id="torch-btn" aria-pressed="false">Torch off</button>
+  </div>
 
   <div class="manual-entry">
     <input type="text" id="barcode-input" placeholder="Enter barcode" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
@@ -202,7 +217,12 @@
   function initScanner() {
     scanner = new Html5Qrcode("reader");
     scanner.start(
-      { facingMode: "environment" },
+      {
+        facingMode: "environment",
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        focusMode: "continuous"
+      },
       {
         fps: 10,
         qrbox: function (viewfinderWidth, viewfinderHeight) {
@@ -214,14 +234,56 @@
           Html5QrcodeSupportedFormats.EAN_8,
           Html5QrcodeSupportedFormats.UPC_A,
         ],
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true }
       },
       onScanSuccess,
       function () { /* ignore scan failure noise */ }
     ).then(function () {
       statusEl.textContent = "Point camera at a barcode";
+      console.info(
+        "BarcodeDetector " +
+        (typeof BarcodeDetector !== "undefined"
+          ? "native (ML Kit on Chrome Android)"
+          : "JS fallback (ZXing) — slower, lower hit rate")
+      );
+      maybeEnableTorchButton();
     }).catch(function (err) {
       statusEl.textContent = "Camera unavailable \u2014 use manual entry";
       console.warn("Camera init failed:", err);
+    });
+  }
+
+  // --- Torch (only available on devices that report the capability) ---
+  function maybeEnableTorchButton() {
+    if (!scanner || typeof scanner.getRunningTrackCapabilities !== "function") return;
+    var caps;
+    try {
+      caps = scanner.getRunningTrackCapabilities();
+    } catch (err) {
+      console.warn("Could not query camera capabilities:", err);
+      return;
+    }
+    if (!caps || !caps.torch) return;
+
+    var torchRow = document.getElementById("torch-row");
+    var torchBtn = document.getElementById("torch-btn");
+    if (!torchRow || !torchBtn) return;
+
+    var torchOn = false;
+    torchRow.className = "torch-row visible";
+    torchBtn.addEventListener("click", function () {
+      var next = !torchOn;
+      scanner.applyVideoConstraints({ advanced: [{ torch: next }] })
+        .then(function () {
+          torchOn = next;
+          torchBtn.textContent = torchOn ? "Torch on" : "Torch off";
+          torchBtn.setAttribute("aria-pressed", torchOn ? "true" : "false");
+          torchBtn.className = torchOn ? "torch-btn on" : "torch-btn";
+        })
+        .catch(function (err) {
+          console.warn("Torch toggle failed:", err);
+          statusEl.textContent = "Torch unavailable on this device";
+        });
     });
   }
 

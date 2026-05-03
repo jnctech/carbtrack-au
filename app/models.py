@@ -50,6 +50,7 @@ class Food(SQLModel, table=True):
     sodium_mg: Optional[float] = None
     gi_rating: Optional[str] = None
     serving_size_g: Optional[float] = None
+    icon_key: Optional[str] = None
     conflict_flag: bool = Field(default=False)
     verified_at: Optional[datetime] = None
     active: bool = Field(default=True)
@@ -92,3 +93,40 @@ class Staging(SQLModel, table=True):
             f"Staging(id={self.id}, source_id={self.source_id}, "
             f"status={self.status})"
         )
+
+
+class Recipe(SQLModel, table=True):
+    __tablename__ = "recipes"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(nullable=False)
+    servings: int = Field(default=1, nullable=False)
+    notes: Optional[str] = None
+    pinned: bool = Field(default=False)
+    active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class RecipeIngredient(SQLModel, table=True):
+    __tablename__ = "recipe_ingredients"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    recipe_id: int = Field(foreign_key="recipes.id", nullable=False)
+    food_id: int = Field(foreign_key="foods.id", nullable=False)
+    quantity_g: float = Field(nullable=False)
+    sort_order: int = Field(default=0, nullable=False)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class RecipeAttachment(SQLModel, table=True):
+    __tablename__ = "recipe_attachments"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    recipe_id: int = Field(foreign_key="recipes.id", nullable=False)
+    kind: str = Field(nullable=False)
+    filename: str = Field(nullable=False)
+    mime_type: str = Field(nullable=False)
+    caption: Optional[str] = None
+    sort_order: int = Field(default=0, nullable=False)
+    created_at: datetime = Field(default_factory=_utcnow)

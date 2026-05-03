@@ -1,6 +1,7 @@
 """FastAPI entry point for CarbTrack AU."""
 
 import logging
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +14,10 @@ from app.database import init_db
 from app.routers import attachments, foods, queries, recipes, sources, staging
 
 load_dotenv()
+
+# Python's stdlib mimetypes tables on python:3.12-slim don't include WebP,
+# so StaticFiles served thumbs as text/plain. Register before any mount.
+mimetypes.add_type("image/webp", ".webp")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),

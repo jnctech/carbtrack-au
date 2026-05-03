@@ -4,6 +4,10 @@ WORKDIR /app
 
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 
+# libheif1: runtime dep for pillow-heif so iPhone HEIC photos can be processed
+RUN apt-get update && apt-get install -y --no-install-recommends libheif1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

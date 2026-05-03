@@ -44,12 +44,16 @@ app.include_router(attachments.router)
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
-# Local-dev only: serve uploaded recipe attachments straight from FastAPI.
-# In production the reverse proxy serves /attachments/* directly from the
-# Docker volume, so this mount is skipped (directory absent in test env).
+# Serve recipe attachments. Production reverse proxy currently passes
+# /attachments/* through to FastAPI, so we always mount when the directory
+# can be created. Skipped only when the env var points somewhere unwritable
+# (e.g. tests use tmp_path via monkeypatch and create the dir themselves).
 _ATT_DIR = Path(os.getenv("ATTACHMENTS_DIR", "/app/data/attachments"))
-if _ATT_DIR.exists():
+try:
+    _ATT_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/attachments", StaticFiles(directory=_ATT_DIR), name="attachments")
+except OSError:
+    pass
 
 
 @app.get("/health")
